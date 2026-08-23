@@ -1,0 +1,60 @@
+capture:
+  fps: 60
+  # OBS sidecar output (Recording -> Custom Output (FFmpeg), container mpegts).
+  # Pin the sidecar's Output (scaled) Resolution to width x height below,
+  # regardless of canvas size (works for both 1920x1080 and 2560x1440 setups).
+  stream_url: "udp://127.0.0.1:9733"
+  width: 1920
+  height: 1080
+
+roi:
+  # Two equivalent forms, all values normalized 0.0-1.0:
+  #
+  # 1) origin + size:
+  #      x: 0.25
+  #      y: 0.25
+  #      width: 0.50
+  #      height: 0.50
+  #
+  # 2) corner endpoints (x1,y1) = top-left, (x2,y2) = bottom-right:
+  #      x1: 0.25
+  #      y1: 0.25
+  #      x2: 0.75
+  #      y2: 0.75
+  x: 0.25
+  y: 0.25
+  width: 0.50
+  height: 0.50
+
+detection:
+  required_frames: 3
+  reset_threshold: 0.80
+
+colors:
+  black:
+    rgb: [0, 0, 0]
+    tolerance: 15
+
+  white:
+    rgb: [255, 255, 255]
+    tolerance: 15
+
+splits:
+  - id: 1
+    name: "Transition 1"
+    color: black
+    threshold: 0.95
+
+  - id: 2
+    name: "Transition 2"
+    color: black
+    threshold: 0.95
+
+  - id: 3
+    name: "Transition 3"
+    color: white
+    threshold: 0.95
+
+livesplit:
+  host: "127.0.0.1"
+  port: 16834

@@ -1,0 +1,44 @@
+capture:
+  fps: 60
+  stream_url: "udp://127.0.0.1:9733"
+  width: 1920
+  height: 1080
+
+roi:
+  x: 0.25
+  y: 0.25
+  width: 0.50
+  height: 0.50
+
+detection:
+  required_frames: 3
+  reset_threshold: 0.80
+
+colors:
+  black:
+    rgb: [0, 0, 0]
+    tolerance: 15
+
+  white:
+    rgb: [255, 255, 255]
+    tolerance: 15
+
+splits:
+  - id: 1
+    name: "Transition 1"
+    color: black
+    threshold: 0.95
+
+  - id: 2
+    name: "Transition 2"
+    color: black
+    threshold: 0.95
+
+  - id: 3
+    name: "Transition 3"
+    color: white
+    threshold: 0.95
+
+livesplit:
+  host: "127.0.0.1"
+  port: 16834
