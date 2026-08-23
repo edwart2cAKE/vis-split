@@ -160,6 +160,40 @@ Behavior:
 - Wire protocol facts (for debugging): commands are newline-terminated
   (`split\n`); `split` produces no response; `ping` answers `pong`.
 
+## Running a full session
+
+Launch order (each step depends on the previous one being up):
+
+1. **OBS** with the sidecar configured per *Connecting OBS* → **Start
+   Recording**. Confirm the sidecar's Output (scaled) Resolution matches
+   `capture.width/height`.
+2. **LiveSplit** under Wine → right-click → **Control** → **Start TCP
+   Server**, then start your timer manually.
+3. **Sober** (Roblox) in the scene OBS is capturing.
+4. The detector:
+
+   ```bash
+   uv run python -m autosplitter.main --config config.yaml --live --livesplit --loop
+   ```
+
+Healthy output looks like: rolling fps steady at `capture.fps` (±15%), no
+`HINT:` line, `LiveSplit: CONNECTED`, exactly one `SPLIT fired` line per real
+transition, and — with `--loop` — a `RUN COMPLETE — rearmed` boundary between
+practice runs.
+
+Notes:
+
+- `--loop` only rearms the *detection* machine after `DONE` (after
+  `detection.restart_quiet_seconds` of the next run's first color staying
+  quiet). **Reset your LiveSplit timer between runs yourself** — the detector
+  never starts, pauses, or resets it.
+- Without `--loop`, the detector exits after every configured split has
+  fired.
+- When something looks off, note: fps dips, a late `SPLIT` relative to the
+  on-screen transition, `DISCONNECTED` blips, or missing splits during heavy
+  packet loss (silent at the UDP layer). Each maps to a row in
+  *Troubleshooting*.
+
 ## Measuring end-to-end latency
 
 When splits feel late, isolate whether the delay is in OBS or in the detector

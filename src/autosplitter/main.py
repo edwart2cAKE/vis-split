@@ -107,6 +107,7 @@ def _run_live(
     height_override: int | None,
     snap_frames: int | None,
     livesplit_enabled: bool = False,
+    loop_enabled: bool = False,
 ) -> int:
     """Decode the sidecar stream and feed frames through the state machine,
     printing a rolling status line (Phase 4 demo).
@@ -122,6 +123,11 @@ def _run_live(
 
     With ``livesplit_enabled``, split events are forwarded to LiveSplit
     Server (splits only); connection state changes are reported inline.
+
+    With ``loop_enabled``, DONE is no longer terminal: once the next run's
+    first split color stays below ``reset_threshold`` for
+    ``detection.restart_quiet_seconds`` (frame-counted at ``capture.fps``),
+    the machine rearms for another pass.
     """
     url = source_override or cfg.capture.stream_url
     width = width_override or cfg.capture.width
@@ -140,10 +146,19 @@ def _run_live(
     )
     if snap_frames is not None:
         print(f"Snap mode: saving frame {snap_frames} -> snap.png")
+    if loop_enabled:
+        quiet = cfg.detection.restart_quiet_seconds
+        print(
+            f"Loop: rearms after {quiet:g}s of quiet"
+            + " (you reset your own timer between runs)"
+        )
     active = cfg.splits[0]
     print(f"Waiting for: {active.id}. \"{active.name}\" (threshold {active.threshold * 100:.1f}%)")
 
     machine = TransitionDetector(cfg)
+    first_detector = machine.first_detector
+    quiet_needed = machine.quiet_frames_needed
+    quiet_frames = 0
     frame_index = 0
     stamps: deque[float] = deque(maxlen=60)
     unavailable = False
@@ -168,7 +183,7 @@ def _run_live(
 
     try:
         while max_frames is None or frame_index < max_frames:
-            if machine.finished:
+            if machine.finished and not loop_enabled:
                 print("\nDONE: every configured split has fired.")
                 break
 
@@ -189,6 +204,19 @@ def _run_live(
 
             ratio = _frame_ratio(machine, frame)
             event = machine.feed_result(res_from_ratio(ratio))
+
+            # --loop rearm watch: once finished, track the NEXT run's first
+            # split color; a sustained quiet stretch rewinds the machine.
+            if loop_enabled and machine.finished and first_detector is not None:
+                ratio = first_detector.detect(frame).ratio
+                if ratio >= cfg.detection.reset_threshold:
+                    quiet_frames = 0
+                else:
+                    quiet_frames += 1
+                    if quiet_frames >= quiet_needed:
+                        machine.reset()
+                        quiet_frames = 0
+                        print("\nRUN COMPLETE — rearmed, watching for Transition 1")
 
             if client is not None:
                 connected_now = client.poll_connection()
@@ -235,6 +263,8 @@ def _run_live(
                 f"\r#{frame_index:<6} {fps:5.1f} fps  match {ratio * 100:6.2f}%"
                 + f"  {machine.state.name:<17}"
             )
+            if loop_enabled and machine.finished:
+                line += f"  quiet {quiet_frames}/{quiet_needed}"
             due = last_draw is None or now - last_draw >= 0.1
             if event is not None or due:
                 print(line, end="", flush=True)
@@ -321,6 +351,15 @@ def main(argv: list[str] | None = None) -> int:
             " the timer is never started, paused, or reset)"
         ),
     )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help=(
+            "with --live: after DONE, rearm automatically once the next run's"
+            " first split color stays quiet for detection.restart_quiet_seconds"
+            " (reset your LiveSplit timer between runs yourself)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     # argparse.Namespace attributes are untyped; validate/cast once, here.
@@ -333,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     height_override = cast("int | None", args.height)
     snap_frames = cast("int | None", args.snap)
     livesplit_enabled = cast(bool, args.livesplit)
+    loop_enabled = cast(bool, args.loop)
 
     for name, value in (("width", width_override), ("height", height_override), ("snap", snap_frames)):
         if value is not None and value <= 0:
@@ -364,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
                 height_override,
                 snap_frames,
                 livesplit_enabled,
+                loop_enabled,
             )
             or exit_code
         )

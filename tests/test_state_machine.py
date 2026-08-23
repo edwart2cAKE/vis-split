@@ -41,6 +41,8 @@ def make_config(
     splits: tuple[Split, ...] | None = None,
     required_frames: int = 3,
     reset_threshold: float = 0.80,
+    fps: float = 60.0,
+    restart_quiet_seconds: float = 3.0,
 ) -> Config:
     if splits is None:
         splits = (
@@ -48,9 +50,13 @@ def make_config(
             Split(id=2, name="Second", color="black", threshold=0.95),
         )
     return Config(
-        capture=Capture(fps=60.0, stream_url="udp://127.0.0.1:9733", width=1920, height=1080),
+        capture=Capture(fps=fps, stream_url="udp://127.0.0.1:9733", width=1920, height=1080),
         roi=DEFAULT_ROI,
-        detection=Detection(required_frames=required_frames, reset_threshold=reset_threshold),
+        detection=Detection(
+            required_frames=required_frames,
+            reset_threshold=reset_threshold,
+            restart_quiet_seconds=restart_quiet_seconds,
+        ),
         colors={"black": BLACK, "white": WHITE},
         splits=splits,
         livesplit=LiveSplit(host="127.0.0.1", port=16834),
@@ -262,6 +268,55 @@ class TestResetMethod:
         second_run = events_of(machine, [1.0, 1.0])
 
         assert first_run == second_run == [SplitEvent(split_id=1, name="First")]
+
+
+class TestFirstDetector:
+    def test_available_while_waiting(self) -> None:
+        machine = TransitionDetector(make_config(required_frames=1))
+
+        detector = machine.first_detector
+        assert detector is not None
+        assert detector is machine.current_detector
+
+    def test_survives_done_when_current_detector_is_none(self) -> None:
+        """--loop relies on this: after DONE the rearm watch still needs the
+        next run's first split color."""
+        machine = TransitionDetector(make_config(required_frames=1))
+        machine.feed_result(res(1.0))
+        machine.feed_result(res(0.50))
+        machine.feed_result(res(1.0))
+        machine.feed_result(res(0.50))
+        assert machine.finished
+        assert machine.current_detector is None
+
+        detector = machine.first_detector
+        assert detector is not None
+
+        # Machine stays DONE until reset(); quiet feeds change nothing.
+        assert machine.feed_result(res(0.50)) is None
+        assert machine.finished
+
+
+class TestQuietFramesNeeded:
+    """Frame-counted --loop quiet period (debounce is frame-based everywhere)."""
+
+    def test_seconds_times_fps(self) -> None:
+        machine = TransitionDetector(make_config(fps=60.0, restart_quiet_seconds=3.0))
+        assert machine.quiet_frames_needed == 180
+
+    def test_reference_fixture_values(self) -> None:
+        cfg = load(FIXTURES / "valid_config.yaml")
+        # 2.5 s at 120 fps = exactly 300 frames.
+        assert TransitionDetector(cfg).quiet_frames_needed == 300
+
+    def test_zero_seconds_still_requires_one_frame(self) -> None:
+        machine = TransitionDetector(make_config(restart_quiet_seconds=0.0))
+        assert machine.quiet_frames_needed == 1
+
+    def test_fractional_seconds_round_to_nearest_frame(self) -> None:
+        # 0.04 s at 120 fps = 4.8 frames -> 5.
+        machine = TransitionDetector(make_config(fps=120.0, restart_quiet_seconds=0.04))
+        assert machine.quiet_frames_needed == 5
 
 
 # ---------------------------------------------------------------------------

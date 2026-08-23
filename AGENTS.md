@@ -2,7 +2,7 @@
 
 ## Status
 
-Planning repo, Phases 1-4 and Phase 6 (LiveSplit) implemented (config + color detector + state machine + MPEG-TS frame capture + LiveSplit client). The single source of truth is `Project Overview — Roblox Visual.md` — read it before implementing anything. It defines the full design, phased build order (section 19), reference config (section 21), and dev rules (section 20).
+Planning repo, Phases 1-4, 6 (LiveSplit), and the Phase 7 `--loop` rearm feature implemented (config + color detector + state machine + MPEG-TS frame capture + LiveSplit client + loop). The single source of truth is `Project Overview — Roblox Visual.md` — read it before implementing anything. It defines the full design, phased build order (section 19), reference config (section 21), and dev rules (section 20).
 
 ## Commands
 
@@ -14,7 +14,7 @@ uv-managed project (src layout). Always use `uv run`; never system pip.
 - `uv run basedpyright src tests` — typecheck in strict "recommended" mode (matches Zed); `[tool.basedpyright]` in pyproject.toml points at `.venv`, which also fixes import resolution in Zed
 - `uv run python -m autosplitter.main --config config.yaml --check` — validate config, print summary; exit 1 + precise error if invalid
 - `uv run python -m autosplitter.main --config config.yaml --detect IMAGE.png` — run every split's color detector over a static image; per-split match % / threshold / HIT
-- `uv run python -m autosplitter.main --live [SOURCE] [--width W] [--height H] [--max-frames N] [--snap N] [--livesplit]` — live capture demo: rolling fps/match/state status; SOURCE may be a `.ts` file for offline smoke tests (then pass its dimensions via --width/--height); `--snap N` saves frame N to snap.png and exits; `--livesplit` forwards split events to LiveSplit Server; Ctrl-C or EOF stops
+- `uv run python -m autosplitter.main --live [SOURCE] [--width W] [--height H] [--max-frames N] [--snap N] [--livesplit] [--loop]` — live capture demo: rolling fps/match/state status; SOURCE may be a `.ts` file for offline smoke tests (then pass its dimensions via --width/--height); `--snap N` saves frame N to snap.png and exits; `--livesplit` forwards split events to LiveSplit Server; `--loop` rearms the machine after DONE once the next run's first color stays quiet for `detection.restart_quiet_seconds` (user resets their own timer between runs); Ctrl-C or EOF stops
 
 Verification order per phase: tests → ruff → basedpyright → phase demo command.
 
@@ -59,5 +59,6 @@ Minimal set: OpenCV, NumPy, PyYAML, plus whatever the chosen OBS capture method 
 - Stream rate = OBS's **Common FPS Value** (Settings → Video), not monitor Hz; currently 120 fps, matching `capture.fps`. Debounce is frame-counted: keep `required_frames ≈ capture.fps / 20` (~50 ms of flicker immunity). `--live` prints a one-time HINT when a udp/tcp stream's rolling fps deviates >15% from `capture.fps`.
 - LiveSplit Server wire protocol: commands case-sensitive, newline-terminated (`split\n`); `split` has NO response, `ping` returns `pong`; server must be started manually per launch (Control → Start TCP Server) unless Startup Behavior is configured. `LiveSplitClient.split()` never raises and never blocks longer than `livesplit.timeout_seconds`; reconnect attempts are rate-limited to `livesplit.reconnect_seconds`. Detection must keep running when LiveSplit is down.
 - `MpegTsFrameSource` auto-reconnects with backoff for udp/tcp locations only; file locations play once then report exhausted (no replay loop).
+- DONE is terminal unless `--loop`: the rearm watch measures splits[0]'s color (via `TransitionDetector.first_detector`, which unlike `current_detector` survives DONE) and calls `reset()` after `detection.restart_quiet_seconds` of continuous ratio-below-`reset_threshold` frames, frame-counted at `capture.fps`. The user resets their own LiveSplit timer between runs — the detector never touches timer state.
 - Handle failures gracefully: lost capture → reconnect instead of crash; LiveSplit down → keep detecting, report `DISCONNECTED`, reconnect when available.
 - Invalid config must fail with precise errors (e.g. `config.yaml: splits[2].threshold must be between 0.0 and 1.0`), not stack traces.

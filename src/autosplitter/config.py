@@ -58,6 +58,9 @@ class Color:
 class Detection:
     required_frames: int
     reset_threshold: float
+    # --loop: quiet period (seconds) on the next run's first color before
+    # the machine rearms after DONE.
+    restart_quiet_seconds: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -274,7 +277,19 @@ def _parse_detection(value: object, label: str) -> Detection:
             f"{label}: detection.reset_threshold must be between 0.0 and 1.0"
         )
 
-    return Detection(required_frames=required_frames, reset_threshold=float(reset_threshold))
+    restart_quiet = data.get("restart_quiet_seconds", 3.0)
+    if not _is_number(restart_quiet):
+        raise ConfigError(f"{label}: detection.restart_quiet_seconds must be a number")
+    if restart_quiet < 0.0:
+        raise ConfigError(
+            f"{label}: detection.restart_quiet_seconds must not be negative"
+        )
+
+    return Detection(
+        required_frames=required_frames,
+        reset_threshold=float(reset_threshold),
+        restart_quiet_seconds=float(restart_quiet),
+    )
 
 
 def _coerce_rgb_list(value: object) -> list[int] | None:

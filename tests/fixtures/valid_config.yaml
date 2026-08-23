@@ -13,6 +13,9 @@ roi:
 detection:
   required_frames: 6
   reset_threshold: 0.80
+  # Deliberately different from the 3.0 parser default so the reference test
+  # proves this key is parsed, not defaulted.
+  restart_quiet_seconds: 2.5
 
 colors:
   black:

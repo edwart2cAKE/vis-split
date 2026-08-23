@@ -55,7 +55,9 @@ class TestValidConfig:
             height=1080,
         )
         assert cfg.roi == Roi(x=0.25, y=0.25, width=0.50, height=0.50)
-        assert cfg.detection == Detection(required_frames=6, reset_threshold=0.80)
+        assert cfg.detection == Detection(
+            required_frames=6, reset_threshold=0.80, restart_quiet_seconds=2.5
+        )
         assert cfg.colors["black"] == Color(name="black", rgb=(0, 0, 0), tolerance=15.0)
         assert cfg.colors["white"].rgb == (255, 255, 255)
         assert len(cfg.splits) == 3
@@ -494,6 +496,166 @@ class TestDetection:
         with pytest.raises(
             ConfigError,
             match=r"detection\.reset_threshold must be between 0\.0 and 1\.0",
+        ):
+            load(path)
+
+    def test_restart_quiet_seconds_parsed(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+              restart_quiet_seconds: 1.25
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            """,
+        )
+
+        cfg = load(path)
+        assert cfg.detection.restart_quiet_seconds == 1.25
+
+    def test_restart_quiet_seconds_absent_gets_default(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            """,
+        )
+
+        cfg = load(path)
+        assert cfg.detection.restart_quiet_seconds == 3.0
+
+    def test_zero_restart_quiet_seconds_accepted(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+              restart_quiet_seconds: 0
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            """,
+        )
+
+        cfg = load(path)
+        assert cfg.detection.restart_quiet_seconds == 0.0
+
+    def test_negative_restart_quiet_seconds_rejected(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+              restart_quiet_seconds: -1.0
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            """,
+        )
+
+        with pytest.raises(
+            ConfigError,
+            match=r"detection\.restart_quiet_seconds must not be negative",
+        ):
+            load(path)
+
+    def test_non_number_restart_quiet_seconds_rejected(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+              restart_quiet_seconds: "soon"
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            """,
+        )
+
+        with pytest.raises(
+            ConfigError,
+            match=r"detection\.restart_quiet_seconds must be a number",
         ):
             load(path)
 

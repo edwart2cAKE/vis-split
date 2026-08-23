@@ -88,6 +88,28 @@ class TransitionDetector:
         return self._detectors[self._index]
 
     @property
+    def first_detector(self) -> ColorDetector | None:
+        """Detector for the first split, even while finished.
+
+        ``--loop`` uses it to watch for the quiet period that rearms the
+        machine after DONE.
+        """
+        if not self._detectors:
+            return None
+        return self._detectors[0]
+
+    @property
+    def quiet_frames_needed(self) -> int:
+        """Frame-counted equivalent of ``detection.restart_quiet_seconds``.
+
+        Debounce is frame-based everywhere, so the ``--loop`` quiet period
+        counts frames at capture rate too; zero seconds still requires one
+        quiet frame.
+        """
+        seconds = self._config.detection.restart_quiet_seconds
+        return max(1, round(seconds * self._config.capture.fps))
+
+    @property
     def finished(self) -> bool:
         return self._state is State.DONE
 

@@ -31,6 +31,9 @@ detection:
   # 3-frames-at-60-fps window (~50 ms of flicker immunity).
   required_frames: 6
   reset_threshold: 0.80
+  # --loop only: after DONE, rearm once the NEXT run's first split color
+  # stays below reset_threshold for this many seconds.
+  restart_quiet_seconds: 3.0
 
 colors:
   black:
