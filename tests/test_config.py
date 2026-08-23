@@ -46,13 +46,16 @@ class TestValidConfig:
         cfg = load_fixture()
 
         assert cfg.capture == Capture(
-            fps=60.0,
-            stream_url="udp://127.0.0.1:9733",
+            fps=120.0,
+            stream_url=(
+                "udp://127.0.0.1:9733"
+                + "?pkt_size=1316&fifo_size=42552&overrun_nonfatal=1&buffer_size=212992"
+            ),
             width=1920,
             height=1080,
         )
         assert cfg.roi == Roi(x=0.25, y=0.25, width=0.50, height=0.50)
-        assert cfg.detection == Detection(required_frames=3, reset_threshold=0.80)
+        assert cfg.detection == Detection(required_frames=6, reset_threshold=0.80)
         assert cfg.colors["black"] == Color(name="black", rgb=(0, 0, 0), tolerance=15.0)
         assert cfg.colors["white"].rgb == (255, 255, 255)
         assert len(cfg.splits) == 3

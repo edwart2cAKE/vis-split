@@ -271,15 +271,16 @@ class TestResetMethod:
 
 class TestFeedFrameIntegration:
     def test_full_sequence_with_color_switch(self) -> None:
-        """3 black frames fire split 1; white clears; 3 more black fire
-        split 2; white clears; 3 white frames fire split 3 (white target)."""
+        """6 black frames fire split 1; white clears; 6 more black fire
+        split 2; white clears; 6 white frames fire split 3 (white target).
+        Runs match required_frames=6 in valid_config.yaml."""
         cfg = load(FIXTURES / "valid_config.yaml")
         machine = TransitionDetector(cfg)
 
         black = load_png("roi_black_exact.png")
         white = load_png("roi_white_exact.png")
 
-        sequence = [black] * 3 + [white] * 2 + [black] * 3 + [white] * 2 + [white] * 4
+        sequence = [black] * 6 + [white] * 2 + [black] * 6 + [white] * 2 + [white] * 6
         fired: list[SplitEvent] = []
         for frame in sequence:
             event = machine.feed_frame(frame)

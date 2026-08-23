@@ -1,6 +1,6 @@
 capture:
-  fps: 60
-  stream_url: "udp://127.0.0.1:9733"
+  fps: 120
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316&fifo_size=42552&overrun_nonfatal=1&buffer_size=212992"
   width: 1920
   height: 1080
 
@@ -11,7 +11,7 @@ roi:
   height: 0.50
 
 detection:
-  required_frames: 3
+  required_frames: 6
   reset_threshold: 0.80
 
 colors:

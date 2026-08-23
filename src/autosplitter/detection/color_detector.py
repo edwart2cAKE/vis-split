@@ -9,9 +9,11 @@ BGR once at construction time.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import cast
 
+import cv2
 import numpy as np
 
 from autosplitter.config import Color, Config, Roi, Split
@@ -62,6 +64,12 @@ class ColorDetector:
             color.rgb[0],
         )
         self._tolerance: float = color.tolerance
+        # Precomputed inclusive cube bounds: a pixel matches iff every
+        # channel satisfies target - tolerance <= c <= target + tolerance.
+        lo = tuple(max(math.ceil(t - color.tolerance), 0) for t in self._target_bgr)
+        hi = tuple(min(math.floor(t + color.tolerance), 255) for t in self._target_bgr)
+        self._lo: np.ndarray = np.array(lo, dtype=np.uint8)
+        self._hi: np.ndarray = np.array(hi, dtype=np.uint8)
 
     @property
     def name(self) -> str:
@@ -83,11 +91,10 @@ class ColorDetector:
         if total == 0:
             return DetectionResult(matched_pixels=0, total_pixels=0, ratio=0.0)
 
-        # uint8 arithmetic wraps on negative results; widen before subtracting.
-        diff = np.abs(crop.astype(np.int16) - np.array(self._target_bgr, dtype=np.int16))
-        mask = np.all(diff <= self._tolerance, axis=-1)
-
-        matched = int(mask.sum())
+        # Single C-level call: mask[i,j] = 255 where every channel of the
+        # pixel lies inside [lo, hi] (equivalent to the per-channel cube).
+        mask = cv2.inRange(crop, self._lo, self._hi)
+        matched = int(cv2.countNonZero(mask))
         return DetectionResult(
             matched_pixels=matched,
             total_pixels=total,

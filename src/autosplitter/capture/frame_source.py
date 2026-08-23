@@ -12,7 +12,10 @@ OBS-side setup (one time):
     Settings -> Output -> Recording -> Output Type: Custom Output (FFmpeg)
       Container format:           mpegts
       File path or URL:           udp://127.0.0.1:9733?pkt_size=1316
-      Encoder:                    x264 (tune zerolatency) or hardware NVENC
+      Video Encoder:              libx264 or h264_nvenc (tick "Show all
+                                  codecs" if only mpeg2video is listed)
+      Video Encoder Settings:     tune=zerolatency bf=0   (libx264)
+                                  bf=0                   (h264_nvenc)
       Output (scaled) Resolution: must equal capture.width x capture.height
                                   in config.yaml (pinned 1920x1080 regardless
                                   of canvas size)
@@ -25,9 +28,17 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
-from typing import BinaryIO, Protocol, cast
+from typing import Protocol, cast
 
 import numpy as np
+
+
+class ByteStream(Protocol):
+    """A readinto-capable byte stream (e.g. io.BytesIO, BufferedReader)."""
+
+    def readinto(self, buffer: memoryview, /) -> int:
+        """Read up to len(buffer) bytes into buffer; 0 signals EOF."""
+        ...
 
 
 class FrameSource(Protocol):
@@ -47,27 +58,33 @@ class RawPipeReader:
 
     Deliberately subprocess-free: partial-read assembly is unit-testable
     with e.g. io.BytesIO. Returns None on EOF, whether clean or mid-frame.
+
+    Hot-path contract: every frame is decoded into one preallocated buffer
+    via ``readinto`` — no per-frame allocation, no intermediate copies.
+    The returned array is REUSED by the next call, so copy it (``.copy()``
+    or ``np.array(frame)``) if it must outlive the following read.
     """
 
-    def __init__(self, width: int, height: int, stream: BinaryIO) -> None:
+    def __init__(self, width: int, height: int, stream: ByteStream) -> None:
         self._width: int = width
         self._height: int = height
-        self._stream: BinaryIO = stream
+        self._stream: ByteStream = stream
         self._frame_bytes: int = width * height * 3
+        self._buf: np.ndarray = np.empty(self._frame_bytes, dtype=np.uint8)
+        # One stable view per reader: readinto fills the flat buffer, callers
+        # always see (and reuse) this same shaped ndarray.
+        self._frame: np.ndarray = self._buf.reshape(height, width, 3)
+        self._view: memoryview = memoryview(self._buf)
 
     def read_frame(self) -> np.ndarray | None:
-        needed = self._frame_bytes
-        buf = bytearray(needed)
+        view = self._view
         filled = 0
-        while filled < needed:
-            chunk = self._stream.read(needed - filled)
-            if not chunk:
+        while filled < len(view):
+            written = self._stream.readinto(view[filled:])
+            if written == 0:
                 return None
-            end = filled + len(chunk)
-            buf[filled:end] = chunk
-            filled = end
-        flat = np.frombuffer(buf, dtype=np.uint8)
-        return flat.reshape(self._height, self._width, 3)
+            filled += written
+        return self._frame
 
 
 class MpegTsFrameSource:
@@ -139,12 +156,29 @@ class MpegTsFrameSource:
             "-hide_banner",
             "-loglevel",
             "error",
+            # Sniff as little as possible so spawns/resyncs start decoding
+            # fast; 32 KiB is enough to find stream headers even when joining
+            # an ongoing broadcast mid-stream.
+            "-probesize",
+            "32768",
+            "-analyzeduration",
+            "0",
+            # Ride out UDP bursts: never buffer up frames, drop corrupt input
+            # instead of dying, and keep decoding through demux errors.
             "-fflags",
-            "+nobuffer",
+            "+nobuffer+discardcorrupt",
             "-flags",
             "low_delay",
+            "-err_detect",
+            "ignore_err",
             "-i",
             self._location,
+            # Never let ffmpeg resample the timeline: joining mid-GOP gives
+            # it a bogus framerate estimate and CFR would then duplicate or
+            # drop frames to "fix" it. Passthrough emits every decoded frame
+            # exactly once, preserving true capture cadence.
+            "-fps_mode",
+            "passthrough",
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -161,8 +195,11 @@ class MpegTsFrameSource:
             proc.kill()
             return False
         self._proc = proc
-        # Popen types stdout loosely; stdout=PIPE guarantees a bytes stream.
-        self._reader = RawPipeReader(self._width, self._height, cast(BinaryIO, stream))
+        # Popen types stdout loosely as IO[Any], which does not structurally
+        # overlap the readinto Protocol; hop through object per repo rules.
+        self._reader = RawPipeReader(
+            self._width, self._height, cast(ByteStream, cast(object, stream))
+        )
         return True
 
     def _teardown(self) -> None:
@@ -173,11 +210,13 @@ class MpegTsFrameSource:
             self._ended = True
         if proc is None:
             return
-        if proc.stdout is not None:
-            proc.stdout.close()
+        # Stop the writer before closing its pipe: closing stdout first makes
+        # ffmpeg race us and spew EPIPE diagnostics on the terminal.
         proc.terminate()
         try:
             proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        if proc.stdout is not None:
+            proc.stdout.close()

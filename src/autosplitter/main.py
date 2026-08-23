@@ -19,7 +19,7 @@ import numpy as np
 
 from .capture import MpegTsFrameSource
 from .config import DEFAULT_ROI, Config, ConfigError, load
-from .detection import DetectionResult, TransitionDetector, build_detector
+from .detection import DetectionResult, TransitionDetector
 
 
 def _print_summary(label: str, cfg: Config) -> None:
@@ -57,12 +57,12 @@ def _load_image(image_path: str) -> np.ndarray | None:
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
-def _frame_ratio(cfg: Config, machine: TransitionDetector, frame: np.ndarray) -> float:
+def _frame_ratio(machine: TransitionDetector, frame: np.ndarray) -> float:
     """Match ratio of the currently active split against one frame."""
-    split = machine.current_split
-    if split is None:
+    detector = machine.current_detector
+    if detector is None:
         return 0.0
-    return build_detector(cfg, split).detect(frame).ratio
+    return detector.detect(frame).ratio
 
 
 def _detect_images(cfg: Config, image_paths: list[str]) -> int:
@@ -80,7 +80,7 @@ def _detect_images(cfg: Config, image_paths: list[str]) -> int:
             print(f"INVALID IMAGE: {path}", file=sys.stderr)
             return 1
 
-        ratio = _frame_ratio(cfg, machine, img)
+        ratio = _frame_ratio(machine, img)
         event = machine.feed_result(res_from_ratio(ratio))
         event_text = f"SPLIT id={event.split_id} \"{event.name}\"" if event else "-"
         print(
@@ -100,12 +100,24 @@ def _run_live(
     max_frames: int | None,
     width_override: int | None,
     height_override: int | None,
+    snap_frames: int | None,
 ) -> int:
     """Decode the sidecar stream and feed frames through the state machine,
-    printing a rolling status line (Phase 4 demo)."""
+    printing a rolling status line (Phase 4 demo).
+
+    With ``snap_frames`` set, the Nth decoded frame is written to snap.png
+    and the run ends — pairs with a local ``testsrc`` sender to measure
+    end-to-end latency against its burned-in clock.
+
+    For live (udp/tcp) sources, once the rolling fps window is full it is
+    compared against ``capture.fps``; a sustained deviation >15% prints a
+    one-time HINT (debounce is frame-counted, so a stream/config rate
+    mismatch silently changes split timing).
+    """
     url = source_override or cfg.capture.stream_url
     width = width_override or cfg.capture.width
     height = height_override or cfg.capture.height
+    live_stream = url.startswith(("udp://", "tcp://"))
     try:
         source = MpegTsFrameSource(url, width, height)
     except RuntimeError as exc:
@@ -117,6 +129,8 @@ def _run_live(
         + f" (required_frames={cfg.detection.required_frames},"
         + f" reset_threshold={cfg.detection.reset_threshold:.2f})"
     )
+    if snap_frames is not None:
+        print(f"Snap mode: saving frame {snap_frames} -> snap.png")
     active = cfg.splits[0]
     print(f"Waiting for: {active.id}. \"{active.name}\" (threshold {active.threshold * 100:.1f}%)")
 
@@ -124,6 +138,12 @@ def _run_live(
     frame_index = 0
     stamps: deque[float] = deque(maxlen=60)
     unavailable = False
+    last_draw: float | None = None
+    fps_hint_shown = False
+    # Sustained-rate baseline for the HINT: latched after the join phase so
+    # bursts around startup cannot skew the measurement.
+    steady_base_index: int | None = None
+    steady_base_time: float = 0.0
 
     try:
         while max_frames is None or frame_index < max_frames:
@@ -146,24 +166,57 @@ def _run_live(
             frame_index += 1
             unavailable = False
 
-            ratio = _frame_ratio(cfg, machine, frame)
+            ratio = _frame_ratio(machine, frame)
             event = machine.feed_result(res_from_ratio(ratio))
 
+            # Redraw at most 10 Hz: printing to a terminal every frame stalls
+            # the read loop, backs up the ffmpeg pipe, and triggers UDP
+            # overruns. SPLIT events always draw immediately.
             fps = 0.0
             if len(stamps) >= 2 and stamps[-1] > stamps[0]:
                 fps = (len(stamps) - 1) / (stamps[-1] - stamps[0])
+            if (
+                live_stream
+                and not fps_hint_shown
+                # Judge only sustained rate over >= 1 s past the join phase;
+                # short rolling windows misread mpegts delivery bursts.
+                and len(stamps) == stamps.maxlen
+            ):
+                if steady_base_index is None:
+                    steady_base_index = frame_index
+                    steady_base_time = time.monotonic()
+                else:
+                    span = now - steady_base_time
+                    if span >= 2.0:
+                        sustained_fps = (frame_index - steady_base_index) / span
+                        if abs(sustained_fps - cfg.capture.fps) > cfg.capture.fps * 0.15:
+                            fps_hint_shown = True
+                            print(
+                                f"\nHINT: stream sustains {sustained_fps:.0f} fps"
+                                + f" but capture.fps declares {cfg.capture.fps:g}"
+                                + " — align OBS's Common FPS Value with config.yaml"
+                                + " (debounce is frame-counted and scales with fps)"
+                            )
             line = (
                 f"\r#{frame_index:<6} {fps:5.1f} fps  match {ratio * 100:6.2f}%"
                 + f"  {machine.state.name:<17}"
             )
-            if event is not None:
+            due = last_draw is None or now - last_draw >= 0.1
+            if event is not None or due:
                 print(line, end="", flush=True)
+                last_draw = now
+            if event is not None:
                 print(
                     f"\nSPLIT fired: id={event.split_id} \"{event.name}\""
                     + f" at frame {frame_index}"
                 )
-            else:
-                print(line, end="", flush=True)
+            if snap_frames is not None and frame_index >= snap_frames:
+                out = Path("snap.png")
+                if not cv2.imwrite(str(out), frame):
+                    print(f"\nSNAP FAILED: could not write {out.resolve()}", file=sys.stderr)
+                    return 1
+                print(f"\nSaved frame {frame_index} -> {out.resolve()}")
+                break
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
@@ -217,6 +270,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="with --live: frame height override (default: capture.height from config)",
     )
+    parser.add_argument(
+        "--snap",
+        metavar="N",
+        type=int,
+        default=None,
+        help="with --live: save the Nth decoded frame to snap.png and exit",
+    )
     args = parser.parse_args(argv)
 
     # argparse.Namespace attributes are untyped; validate/cast once, here.
@@ -227,8 +287,9 @@ def main(argv: list[str] | None = None) -> int:
     max_frames = cast("int | None", args.max_frames)
     width_override = cast("int | None", args.width)
     height_override = cast("int | None", args.height)
+    snap_frames = cast("int | None", args.snap)
 
-    for name, value in (("width", width_override), ("height", height_override)):
+    for name, value in (("width", width_override), ("height", height_override), ("snap", snap_frames)):
         if value is not None and value <= 0:
             parser.error(f"--{name} must be a positive integer")
 
@@ -249,7 +310,10 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = _detect_images(cfg, detect_paths) or exit_code
     if live_arg is not None:
         source_override = live_arg or None
-        exit_code = _run_live(cfg, source_override, max_frames, width_override, height_override) or exit_code
+        exit_code = (
+            _run_live(cfg, source_override, max_frames, width_override, height_override, snap_frames)
+            or exit_code
+        )
     return exit_code
 
 

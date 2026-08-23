@@ -28,7 +28,11 @@ from enum import Enum, auto
 import numpy as np
 
 from autosplitter.config import Config, Split
-from autosplitter.detection.color_detector import DetectionResult, build_detector
+from autosplitter.detection.color_detector import (
+    ColorDetector,
+    DetectionResult,
+    build_detector,
+)
 
 
 class State(Enum):
@@ -51,6 +55,11 @@ class TransitionDetector:
 
     def __init__(self, config: Config) -> None:
         self._config: Config = config
+        # Built once: per-frame detector construction would dominate the
+        # hot loop at capture rate (~60 fps).
+        self._detectors: list[ColorDetector] = [
+            build_detector(config, split) for split in config.splits
+        ]
         self._index: int = 0
         self._state: State = State.NORMAL
         self._streak: int = 0
@@ -72,6 +81,13 @@ class TransitionDetector:
         return self._config.splits[self._index]
 
     @property
+    def current_detector(self) -> ColorDetector | None:
+        """Detector for the split being waited for (None when finished)."""
+        if self._index >= len(self._detectors):
+            return None
+        return self._detectors[self._index]
+
+    @property
     def finished(self) -> bool:
         return self._state is State.DONE
 
@@ -83,11 +99,10 @@ class TransitionDetector:
 
     def feed_frame(self, frame: np.ndarray) -> SplitEvent | None:
         """Detect the active split's color on this frame, then advance."""
-        split = self.current_split
-        if split is None:
+        detector = self.current_detector
+        if detector is None:
             return None
-        result = build_detector(self._config, split).detect(frame)
-        return self.feed_result(result)
+        return self.feed_result(detector.detect(frame))
 
     def feed_result(self, result: DetectionResult) -> SplitEvent | None:
         if self.finished or self.current_split is None:

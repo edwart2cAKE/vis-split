@@ -1,9 +1,9 @@
 capture:
-  fps: 60
+  fps: 120
   # OBS sidecar output (Recording -> Custom Output (FFmpeg), container mpegts).
   # Pin the sidecar's Output (scaled) Resolution to width x height below,
   # regardless of canvas size (works for both 1920x1080 and 2560x1440 setups).
-  stream_url: "udp://127.0.0.1:9733"
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316&fifo_size=42552&overrun_nonfatal=1&buffer_size=212992"
   width: 1920
   height: 1080
 
@@ -27,7 +27,9 @@ roi:
   height: 0.50
 
 detection:
-  required_frames: 3
+  # Debounce is frame-counted: 6 frames at 120 fps ~= the original
+  # 3-frames-at-60-fps window (~50 ms of flicker immunity).
+  required_frames: 6
   reset_threshold: 0.80
 
 colors:

@@ -105,14 +105,23 @@ alongside it.
 
 1. File → Settings → **Output** → top-left **Output Mode:** `Advanced`
 2. Stay in Output → open the **Recording** tab:
+   - **Type:** `Custom Output (FFmpeg)`
+   - Tick **Show all codecs** near the encoder dropdowns (without it you may
+     only see `mpeg2video`; if the list looks stale, re-select the container once)
+
    | Field | Value |
    |---|---|
-   | Type | `Custom Output (FFmpeg)` |
    | Container format | `mpegts` |
    | File path or URL | `udp://127.0.0.1:9733?pkt_size=1316` |
-   | Encoder | `NVIDIA NVENC H.264` (or `Software (x264)`) |
+   | Video Encoder | `h264_nvenc` (GPU) or `libx264` (CPU) — never MPEG-2 |
+   | Video Encoder Settings | `bf=0` for nvenc · `tune=zerolatency bf=0` for libx264 |
+   | Common FPS Value | `120` (Settings → Video) — the stream emits at this rate, *not* your monitor's Hz; must match `capture.fps` in config.yaml |
    | Rate Control / Bitrate | `CBR` / `4000 Kbps` |
    | Keyframe Interval | `1 s` |
+
+   ⚠️ On h264_nvenc, do **not** add `delay=0 zerolatency=1`: measured testing
+   showed those disable NVENC's smoothed rate control and produced 10–40 s
+   of added latency on scene switches. Plain `bf=0` is the known-good config.
 3. Settings → **Video** → **Output (Scaled) Resolution:** `1920×1080`
    — this must exactly equal `capture.width` × `capture.height` in `config.yaml`,
    regardless of canvas size (works for both 1920×1080 and 2560×1440 setups;
@@ -127,13 +136,38 @@ Recording before or after launching `--live`. Streaming is untouched.
 - OBS: click **Start Recording** (in addition to Start Streaming if desired)
 - Terminal: `uv run python -m autosplitter.main --config config.yaml --live`
 
+## Measuring end-to-end latency
+
+When splits feel late, isolate whether the delay is in OBS or in the detector
+pipeline by feeding the identical UDP path from a local sender with a
+burned-in millisecond clock:
+
+```bash
+# 1. Stop OBS Recording first — two senders cannot share the UDP port.
+# 2. Terminal 1 — synthetic sender (testsrc displays a running clock):
+ffmpeg -re -f lavfi -i testsrc=size=1920x1080:rate=60 -pix_fmt yuv420p \
+    -c:v h264_nvenc -b:v 4000k -bf 0 -g 60 -f mpegts \
+    "udp://127.0.0.1:9733?pkt_size=1316"
+# 3. Terminal 2 — grab a frame after ~15 s and exit:
+uv run python -m autosplitter.main --live --snap 900
+```
+
+Open `snap.png`: the difference between the burned-in clock and the wall-clock
+time elapsed since the sender started is the true latency of the entire
+detector chain (±1 s human-timing error). Healthy result: well under 1 s.
+If the chain measures clean but live splits still lag seconds behind, the
+delay originates in OBS's sidecar output path.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `capture unavailable, reconnecting...` forever | Recording not started / wrong port | Check **Start Recording** is lit red; URL matches `udp://127.0.0.1:9733` |
 | Garbage fps / weird match numbers / instant EOF | Resolution mismatch | Sidecar Output (Scaled) Resolution must equal config `capture.width/height` exactly |
-| Works but seconds of latency | B-frames/buffering | x264: add `tune=zerolatency bframes=0` in the encoder settings field |
+| fps counter pinned below ~60 (e.g. ~45), latency grows the longer it runs | Consumer slower than producer — backlog accumulates every second | Per-frame Python work must stay allocation-free (see AGENTS.md hot-loop rules); check `--live` fps first whenever splits feel late |
+| Splits late by many seconds while fps counter stays steady ~60 | Frames arrive stale from upstream — delay sits in OBS's output path, not the detector | Verify chain via latency measurement; revert risky encoder settings (`delay=0 zerolatency=1`) |
+| `non-existing PPS 0 referenced / no frame!` storm at startup | Joined the broadcast mid-GOP; decoder waits for the next keyframe | Normal and self-healing (≤ keyframe interval). Start Recording before launching `--live` to avoid it |
+| Glitchy decode errors but no `Circular buffer overrun` warnings | Packet loss happens silently in the kernel's small UDP socket buffer, before ffmpeg's ring | Don't rely on overrun messages to detect loss; keep encoder bitrate spikes smoothed (no reactive-CBR tricks) |
 | First frame torn after mid-run Recording start | Joined before next keyframe | Harmless; resolves within keyframe interval (≤1 s) |
 
 ## Configuration
