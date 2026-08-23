@@ -42,3 +42,5 @@ splits:
 livesplit:
   host: "127.0.0.1"
   port: 16834
+  timeout_seconds: 0.25
+  reconnect_seconds: 5.0

@@ -20,6 +20,7 @@ import numpy as np
 from .capture import MpegTsFrameSource
 from .config import DEFAULT_ROI, Config, ConfigError, load
 from .detection import DetectionResult, TransitionDetector
+from .livesplit import LiveSplitClient
 
 
 def _print_summary(label: str, cfg: Config) -> None:
@@ -49,7 +50,11 @@ def _print_summary(label: str, cfg: Config) -> None:
         print(
             f"    {split.id}. {split.name}  color={split.color} threshold={threshold_pct:.1f}%"
         )
-    print(f"  livesplit: {cfg.livesplit.host}:{cfg.livesplit.port}")
+    print(
+        f"  livesplit: {cfg.livesplit.host}:{cfg.livesplit.port}"
+        + f" (timeout {cfg.livesplit.timeout_seconds:g}s,"
+        + f" reconnect {cfg.livesplit.reconnect_seconds:g}s)"
+    )
 
 
 def _load_image(image_path: str) -> np.ndarray | None:
@@ -101,6 +106,7 @@ def _run_live(
     width_override: int | None,
     height_override: int | None,
     snap_frames: int | None,
+    livesplit_enabled: bool = False,
 ) -> int:
     """Decode the sidecar stream and feed frames through the state machine,
     printing a rolling status line (Phase 4 demo).
@@ -113,6 +119,9 @@ def _run_live(
     compared against ``capture.fps``; a sustained deviation >15% prints a
     one-time HINT (debounce is frame-counted, so a stream/config rate
     mismatch silently changes split timing).
+
+    With ``livesplit_enabled``, split events are forwarded to LiveSplit
+    Server (splits only); connection state changes are reported inline.
     """
     url = source_override or cfg.capture.stream_url
     width = width_override or cfg.capture.width
@@ -140,6 +149,18 @@ def _run_live(
     unavailable = False
     last_draw: float | None = None
     fps_hint_shown = False
+
+    client: LiveSplitClient | None = None
+    ls_was_connected = False
+    if livesplit_enabled:
+        ls = cfg.livesplit
+        client = LiveSplitClient(
+            ls.host,
+            ls.port,
+            timeout_seconds=ls.timeout_seconds,
+            reconnect_seconds=ls.reconnect_seconds,
+        )
+        print(f"LiveSplit: {ls.host}:{ls.port} (splits only)")
     # Sustained-rate baseline for the HINT: latched after the join phase so
     # bursts around startup cannot skew the measurement.
     steady_base_index: int | None = None
@@ -168,6 +189,19 @@ def _run_live(
 
             ratio = _frame_ratio(machine, frame)
             event = machine.feed_result(res_from_ratio(ratio))
+
+            if client is not None:
+                connected_now = client.poll_connection()
+                if connected_now != ls_was_connected:
+                    ls_was_connected = connected_now
+                    print(
+                        "\nLiveSplit: "
+                        + ("CONNECTED" if connected_now else "DISCONNECTED (retrying)")
+                    )
+                if event is not None:
+                    delivered = client.split()
+                    if not delivered:
+                        print("\nLiveSplit: split NOT DELIVERED (server unreachable)")
 
             # Redraw at most 10 Hz: printing to a terminal every frame stalls
             # the read loop, backs up the ffmpeg pipe, and triggers UDP
@@ -221,6 +255,8 @@ def _run_live(
         print("\nStopped.")
     finally:
         source.close()
+        if client is not None:
+            client.close()
     return 0
 
 
@@ -277,6 +313,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="with --live: save the Nth decoded frame to snap.png and exit",
     )
+    parser.add_argument(
+        "--livesplit",
+        action="store_true",
+        help=(
+            "with --live: forward split events to LiveSplit Server (splits only;"
+            " the timer is never started, paused, or reset)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     # argparse.Namespace attributes are untyped; validate/cast once, here.
@@ -288,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     width_override = cast("int | None", args.width)
     height_override = cast("int | None", args.height)
     snap_frames = cast("int | None", args.snap)
+    livesplit_enabled = cast(bool, args.livesplit)
 
     for name, value in (("width", width_override), ("height", height_override), ("snap", snap_frames)):
         if value is not None and value <= 0:
@@ -311,7 +356,15 @@ def main(argv: list[str] | None = None) -> int:
     if live_arg is not None:
         source_override = live_arg or None
         exit_code = (
-            _run_live(cfg, source_override, max_frames, width_override, height_override, snap_frames)
+            _run_live(
+                cfg,
+                source_override,
+                max_frames,
+                width_override,
+                height_override,
+                snap_frames,
+                livesplit_enabled,
+            )
             or exit_code
         )
     return exit_code

@@ -136,6 +136,30 @@ Recording before or after launching `--live`. Streaming is untouched.
 - OBS: click **Start Recording** (in addition to Start Streaming if desired)
 - Terminal: `uv run python -m autosplitter.main --config config.yaml --live`
 
+## Connecting LiveSplit
+
+The detector talks to LiveSplit's built-in TCP command server running under
+Wine (default port `16834`, matching `config.yaml`).
+
+1. In LiveSplit: right-click → **Control** → **Start TCP Server**.
+   The server must be started manually each LiveSplit launch (or configure
+   **Startup Behavior** in the server settings to do it automatically).
+2. Run the detector with the flag:
+
+   ```bash
+   uv run python -m autosplitter.main --config config.yaml --live --livesplit
+   ```
+
+Behavior:
+
+- **Splits only.** The detector never starts, pauses, or resets your timer —
+  you keep full control. Every debounced transition fires one `split`.
+- If LiveSplit is down, detection continues unaffected: the status line shows
+  `DISCONNECTED (retrying)` and reconnects at `livesplit.reconnect_seconds`
+  cadence once the server returns.
+- Wire protocol facts (for debugging): commands are newline-terminated
+  (`split\n`); `split` produces no response; `ping` answers `pong`.
+
 ## Measuring end-to-end latency
 
 When splits feel late, isolate whether the delay is in OBS or in the detector
@@ -166,6 +190,7 @@ delay originates in OBS's sidecar output path.
 | Garbage fps / weird match numbers / instant EOF | Resolution mismatch | Sidecar Output (Scaled) Resolution must equal config `capture.width/height` exactly |
 | fps counter pinned below ~60 (e.g. ~45), latency grows the longer it runs | Consumer slower than producer — backlog accumulates every second | Per-frame Python work must stay allocation-free (see AGENTS.md hot-loop rules); check `--live` fps first whenever splits feel late |
 | Splits late by many seconds while fps counter stays steady ~60 | Frames arrive stale from upstream — delay sits in OBS's output path, not the detector | Verify chain via latency measurement; revert risky encoder settings (`delay=0 zerolatency=1`) |
+| `LiveSplit: DISCONNECTED` never recovers | TCP server not started, or wrong port | Control → **Start TCP Server** each launch; confirm port matches `livesplit.port` |
 | `non-existing PPS 0 referenced / no frame!` storm at startup | Joined the broadcast mid-GOP; decoder waits for the next keyframe | Normal and self-healing (≤ keyframe interval). Start Recording before launching `--live` to avoid it |
 | Glitchy decode errors but no `Circular buffer overrun` warnings | Packet loss happens silently in the kernel's small UDP socket buffer, before ffmpeg's ring | Don't rely on overrun messages to detect loss; keep encoder bitrate spikes smoothed (no reactive-CBR tricks) |
 | First frame torn after mid-run Recording start | Joined before next keyframe | Harmless; resolves within keyframe interval (≤1 s) |

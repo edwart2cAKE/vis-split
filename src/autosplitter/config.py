@@ -70,8 +70,17 @@ class Split:
 
 @dataclass(frozen=True)
 class LiveSplit:
+    """Connection target for LiveSplit Server's TCP command interface.
+
+    ``timeout_seconds`` bounds any single socket operation (a hung server
+    must never stall the detection loop); ``reconnect_seconds`` rate-limits
+    reconnect attempts while the server is unreachable.
+    """
+
     host: str
     port: int
+    timeout_seconds: float = 0.25
+    reconnect_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -388,4 +397,31 @@ def _parse_livesplit(value: object, label: str) -> LiveSplit:
     if not 1 <= port <= 65535:
         raise ConfigError(f"{label}: livesplit.port must be between 1 and 65535")
 
-    return LiveSplit(host=host, port=port)
+    # Socket-op budget and reconnect cadence: optional, mirroring the ROI
+    # section's fallback behavior for minimal configs.
+    timeout_value = data.get("timeout_seconds")
+    if timeout_value is not None:
+        if not _is_number(timeout_value):
+            raise ConfigError(f"{label}: livesplit.timeout_seconds must be a number")
+        if timeout_value <= 0:
+            raise ConfigError(
+                f"{label}: livesplit.timeout_seconds must be greater than 0"
+            )
+
+    reconnect_value = data.get("reconnect_seconds")
+    if reconnect_value is not None:
+        if not _is_number(reconnect_value):
+            raise ConfigError(f"{label}: livesplit.reconnect_seconds must be a number")
+        if reconnect_value <= 0:
+            raise ConfigError(
+                f"{label}: livesplit.reconnect_seconds must be greater than 0"
+            )
+
+    return LiveSplit(
+        host=host,
+        port=port,
+        timeout_seconds=float(timeout_value) if timeout_value is not None else 0.25,
+        reconnect_seconds=(
+            float(reconnect_value) if reconnect_value is not None else 5.0
+        ),
+    )

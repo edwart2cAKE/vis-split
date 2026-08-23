@@ -60,3 +60,7 @@ splits:
 livesplit:
   host: "127.0.0.1"
   port: 16834
+  # Socket-op budget (bounds a hung-server stall to this many seconds) and
+  # the cadence of reconnect attempts while LiveSplit Server is down.
+  timeout_seconds: 0.25
+  reconnect_seconds: 5.0
