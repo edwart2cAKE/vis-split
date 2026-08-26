@@ -29,6 +29,22 @@ class Roi:
     height: float
 
 
+@dataclass(frozen=True)
+class StartTransition:
+    """Optional start-of-run transition (menu → gameplay).
+
+    If present, the state machine waits for this color before entering
+    the normal split sequence. Uses the main ROI unless roi_override is set.
+    """
+
+    name: str
+    color: str
+    threshold: float
+    roi_override: Roi | None = None
+    # If true, send `start` command to LiveSplit Server when detected.
+    auto_start_timer: bool = False
+
+
 DEFAULT_ROI = Roi(x=0.25, y=0.25, width=0.50, height=0.50)
 
 
@@ -87,6 +103,23 @@ class LiveSplit:
 
 
 @dataclass(frozen=True)
+class Record:
+    """Recording settings: path template and optional post-run conversion.
+
+    ``path_template`` supports variables: {game}, {date}, {time}, {datetime},
+    {attempt}.  {attempt} is auto-incremented from existing files.
+    ``convert_to`` if set (e.g. "mp4") triggers a codec-copy conversion
+    after the run; the original .mkv is never deleted.
+    ``post_run_seconds`` keeps recording for this many seconds after the
+    last split fires (captures victory screen / final time display).
+    """
+
+    path_template: str
+    convert_to: str | None = None
+    post_run_seconds: float = 3.0
+
+
+@dataclass(frozen=True)
 class Config:
     capture: Capture
     roi: Roi
@@ -94,6 +127,8 @@ class Config:
     colors: dict[str, Color]
     splits: tuple[Split, ...]
     livesplit: LiveSplit
+    start_transition: StartTransition | None = None
+    record: Record | None = None
 
     def color(self, name: str) -> Color:
         return self.colors[name]
@@ -137,6 +172,8 @@ def load(path: str | Path = "config.yaml") -> Config:
     colors = _parse_colors(data.get("colors"), label)
     splits = _parse_splits(data.get("splits"), colors, label)
     livesplit = _parse_livesplit(data.get("livesplit"), label)
+    start_transition = _parse_start_transition(data.get("start_transition"), colors, label)
+    record = _parse_record(data.get("record"), label)
 
     return Config(
         capture=capture,
@@ -145,6 +182,8 @@ def load(path: str | Path = "config.yaml") -> Config:
         colors=colors,
         splits=splits,
         livesplit=livesplit,
+        start_transition=start_transition,
+        record=record,
     )
 
 
@@ -439,4 +478,95 @@ def _parse_livesplit(value: object, label: str) -> LiveSplit:
         reconnect_seconds=(
             float(reconnect_value) if reconnect_value is not None else 5.0
         ),
+    )
+
+
+def _parse_start_transition(
+    value: object, colors: dict[str, Color], label: str
+) -> StartTransition | None:
+    """Parse optional start_transition section.
+
+    Returns None if the section is absent or empty (start transition disabled).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label}: start_transition must be a mapping")
+    data = cast(dict[str, object], value)
+    if not data:
+        return None
+
+    color_name = data.get("color")
+    if not isinstance(color_name, str) or not color_name.strip():
+        raise ConfigError(f"{label}: start_transition.color must be a non-empty string")
+    if color_name not in colors:
+        raise ConfigError(
+            f"{label}: start_transition.color '{color_name}' not defined in colors"
+        )
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigError(f"{label}: start_transition.name must be a non-empty string")
+
+    threshold = data.get("threshold")
+    if not _is_number(threshold):
+        raise ConfigError(f"{label}: start_transition.threshold must be a number")
+    if not 0.0 <= threshold <= 1.0:
+        raise ConfigError(
+            f"{label}: start_transition.threshold must be between 0.0 and 1.0"
+        )
+
+    roi_override = None
+    roi_data = data.get("roi")
+    if roi_data is not None:
+        if not isinstance(roi_data, dict):
+            raise ConfigError(f"{label}: start_transition.roi must be a mapping")
+        roi_override = _parse_roi(roi_data, f"{label}: start_transition")
+
+    auto_start = data.get("auto_start_timer", False)
+    if not isinstance(auto_start, bool):
+        raise ConfigError(
+            f"{label}: start_transition.auto_start_timer must be a boolean"
+        )
+
+    return StartTransition(
+        name=name,
+        color=color_name,
+        threshold=float(threshold),
+        roi_override=roi_override,
+        auto_start_timer=auto_start,
+    )
+
+
+def _parse_record(value: object, label: str) -> Record | None:
+    """Parse optional record section.
+
+    Returns None if the section is absent or empty (recording disabled).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label}: record must be a mapping")
+    data = cast(dict[str, object], value)
+    if not data:
+        return None
+
+    path_template = data.get("path_template")
+    if not isinstance(path_template, str) or not path_template.strip():
+        raise ConfigError(f"{label}: record.path_template must be a non-empty string")
+
+    convert_to = data.get("convert_to")
+    if convert_to is not None and (not isinstance(convert_to, str) or not convert_to.strip()):
+        raise ConfigError(f"{label}: record.convert_to must be a non-empty string or null")
+
+    post_run = data.get("post_run_seconds", 3.0)
+    if not _is_number(post_run):
+        raise ConfigError(f"{label}: record.post_run_seconds must be a number")
+    if post_run < 0:
+        raise ConfigError(f"{label}: record.post_run_seconds must not be negative")
+
+    return Record(
+        path_template=path_template,
+        convert_to=convert_to if isinstance(convert_to, str) else None,
+        post_run_seconds=float(post_run),
     )

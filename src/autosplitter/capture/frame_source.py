@@ -98,6 +98,11 @@ class MpegTsFrameSource:
     - Anything else (e.g. a file path) plays once; after EOF, :meth:`read`
       keeps returning None instead of replaying in a loop.
 
+    When ``record_path`` is provided, ffmpeg also writes a copy of the stream
+    to that file (codec copy, no re-encoding) while outputting raw frames to
+    the pipe.  This lets a single UDP consumer serve both detection and
+    recording — no second socket needed.
+
     Raises RuntimeError at construction if the ffmpeg binary is missing.
     """
 
@@ -107,6 +112,7 @@ class MpegTsFrameSource:
         width: int,
         height: int,
         *,
+        record_path: str | None = None,
         ffmpeg_bin: str = "ffmpeg",
     ) -> None:
         resolved = shutil.which(ffmpeg_bin)
@@ -116,6 +122,7 @@ class MpegTsFrameSource:
         self._location: str = location
         self._width: int = width
         self._height: int = height
+        self._record_path: str | None = record_path
         self._is_live: bool = location.startswith(("udp://", "tcp://"))
         self._ended: bool = False
         self._backoff: float = 0.0
@@ -179,6 +186,10 @@ class MpegTsFrameSource:
             # exactly once, preserving true capture cadence.
             "-fps_mode",
             "passthrough",
+        ]
+        if self._record_path is not None:
+            cmd += ["-c:v", "copy", self._record_path]
+        cmd += [
             "-f",
             "rawvideo",
             "-pix_fmt",

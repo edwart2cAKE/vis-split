@@ -1,23 +1,32 @@
 """Transition state machine (spec sections 7-10).
 
-State flow:
+State flow (with optional start_transition):
 
+    WAITING_FOR_START --(streak of required_frames at/above threshold)--> TRANSITION
+    TRANSITION --(next frame)--> WAITING_FOR_RESET --(clears)--> NORMAL (index unchanged)
     NORMAL --(streak of required_frames at/above threshold)--> TRANSITION
-    TRANSITION --(next frame)--> WAITING_FOR_RESET
-    WAITING_FOR_RESET --(ratio strictly below reset_threshold)--> NORMAL
-    ... after the last split clears --> DONE (terminal)
+    TRANSITION --(next frame, not last split)--> WAITING_FOR_RESET
+    TRANSITION --(next frame, last split)--> DONE (terminal)
+    WAITING_FOR_RESET --(ratio strictly below reset_threshold)--> NORMAL (index advances)
+
+If no start_transition is configured, the machine starts in NORMAL directly.
 
 Semantics contract:
-- In NORMAL, a frame at or above the active split's threshold extends the
-  consecutive streak; any miss resets it to zero. The split fires on the
-  frame where the streak reaches ``detection.required_frames``; that frame
-  reports state TRANSITION and yields the SplitEvent.
+- In WAITING_FOR_START / NORMAL, a frame at or above the active split's threshold
+  extends the consecutive streak; any miss resets it to zero. The split fires on
+  the frame where the streak reaches ``detection.required_frames``; that frame
+  reports state TRANSITION and yields the SplitEvent (or StartEvent for start).
 - In WAITING_FOR_RESET only a ratio strictly below ``detection.reset_threshold``
   clears the target. Ratios inside the band [reset_threshold, threshold) are
   hysteresis dead-zone: they neither clear nor re-trigger.
 - One continuous transition therefore emits exactly one split.
-- After the last split clears, the machine enters terminal DONE and ignores
-  further frames until :meth:`reset`.
+- The final split skips the reset wait entirely: on the next frame the
+  machine enters terminal DONE. Hysteresis exists to shield a later split
+  from re-triggering on the same color; after the last one there is nothing
+  left to protect, and a persistent victory screen must not stall the run.
+- Once in DONE the machine ignores further frames until :meth:`reset`.
+- If start_transition is configured, ``reset()`` returns to WAITING_FOR_START
+  instead of NORMAL, and the loop rearm watches for the start color again.
 """
 
 from __future__ import annotations
@@ -36,6 +45,7 @@ from autosplitter.detection.color_detector import (
 
 
 class State(Enum):
+    WAITING_FOR_START = auto()
     NORMAL = auto()
     TRANSITION = auto()
     WAITING_FOR_RESET = auto()
@@ -50,6 +60,13 @@ class SplitEvent:
     name: str
 
 
+@dataclass(frozen=True)
+class StartEvent:
+    """Emitted once when the start transition's debounce completes."""
+
+    name: str
+
+
 class TransitionDetector:
     """Tracks the split sequence across a stream of per-frame detections."""
 
@@ -60,9 +77,22 @@ class TransitionDetector:
         self._detectors: list[ColorDetector] = [
             build_detector(config, split) for split in config.splits
         ]
+        # Start transition detector (if configured)
+        self._start_detector: ColorDetector | None = None
+        if config.start_transition is not None:
+            self._start_detector = build_detector(config, config.start_transition)
+
+        # State machine initialization
+        if config.start_transition is not None:
+            self._state: State = State.WAITING_FOR_START
+        else:
+            self._state: State = State.NORMAL
         self._index: int = 0
-        self._state: State = State.NORMAL
         self._streak: int = 0
+        # True while TRANSITION was entered from the start gate (vs a split):
+        # decides whether settling waits for the gate color and keeps the
+        # split index, or advances / ends the run.
+        self._transition_is_start: bool = False
 
     @property
     def state(self) -> State:
@@ -99,6 +129,11 @@ class TransitionDetector:
         return self._detectors[0]
 
     @property
+    def start_detector(self) -> ColorDetector | None:
+        """Detector for the start transition (if configured)."""
+        return self._start_detector
+
+    @property
     def quiet_frames_needed(self) -> int:
         """Frame-counted equivalent of ``detection.restart_quiet_seconds``.
 
@@ -113,30 +148,85 @@ class TransitionDetector:
     def finished(self) -> bool:
         return self._state is State.DONE
 
-    def reset(self) -> None:
-        """Restart from the first split in NORMAL state."""
-        self._index = 0
-        self._state = State.NORMAL
-        self._streak = 0
+    @property
+    def waiting_for_start(self) -> bool:
+        return self._state is State.WAITING_FOR_START
 
-    def feed_frame(self, frame: np.ndarray) -> SplitEvent | None:
+    def reset(self) -> None:
+        """Restart from the beginning (start transition or first split)."""
+        self._index = 0
+        self._streak = 0
+        self._transition_is_start = False
+        if self._config.start_transition is not None:
+            self._state = State.WAITING_FOR_START
+        else:
+            self._state = State.NORMAL
+
+    def feed_frame(self, frame: np.ndarray) -> SplitEvent | StartEvent | None:
         """Detect the active split's color on this frame, then advance."""
-        detector = self.current_detector
+        if self._state is State.WAITING_FOR_START:
+            detector = self._start_detector
+        else:
+            detector = self.current_detector
         if detector is None:
             return None
         return self.feed_result(detector.detect(frame))
 
-    def feed_result(self, result: DetectionResult) -> SplitEvent | None:
-        if self.finished or self.current_split is None:
+    def feed_result(self, result: DetectionResult) -> SplitEvent | StartEvent | None:
+        if self.finished:
+            return None
+
+        # If we're waiting for start, current_split is None but that's expected
+        if self._state is not State.WAITING_FOR_START and self.current_split is None:
             return None
 
         if self._state is State.TRANSITION:
-            # The split fired on the previous frame; settle into waiting.
-            self._state = State.WAITING_FOR_RESET
+            # Something fired on the previous frame and must settle before
+            # the next target is watched. Three origins, three destinations:
+            # - start gate: wait for ITS color to clear, then watch
+            #   splits[0] (the index must NOT advance — the start precedes
+            #   the first split);
+            # - last split: DONE immediately. Hysteresis exists to shield a
+            #   LATER target from re-triggering on the same color; after the
+            #   final split there is none, so a persistent victory screen
+            #   must not stall the run in the dead zone forever;
+            # - any other split: WAITING_FOR_RESET as usual.
+            if self._transition_is_start:
+                self._state = State.WAITING_FOR_RESET
+            elif self._index >= len(self._config.splits) - 1:
+                # Exhaust the index so DONE keeps its invariant that
+                # current_split/current_detector are None (HUD, --probe,
+                # and --loop all rely on it).
+                self._index = len(self._config.splits)
+                self._state = State.DONE
+                # Done on this very frame: do not fall through to the
+                # waiting handlers below.
+                return None
+            else:
+                self._state = State.WAITING_FOR_RESET
 
+        if self._state is State.WAITING_FOR_START:
+            return self._feed_start(result)
         if self._state is State.NORMAL:
             return self._feed_normal(result)
         return self._feed_waiting(result)
+
+    def _feed_start(self, result: DetectionResult) -> StartEvent | None:
+        assert self._config.start_transition is not None
+        split = self._config.start_transition
+        if result.ratio >= split.threshold:
+            self._streak += 1
+        else:
+            self._streak = 0
+            return None
+
+        if self._streak < self._config.detection.required_frames:
+            return None
+
+        self._transition_is_start = True
+        self._state = State.TRANSITION
+        self._streak = 0
+        return StartEvent(name=split.name)
 
     def _feed_normal(self, result: DetectionResult) -> SplitEvent | None:
         split = self._config.splits[self._index]
@@ -149,6 +239,7 @@ class TransitionDetector:
         if self._streak < self._config.detection.required_frames:
             return None
 
+        self._transition_is_start = False
         self._state = State.TRANSITION
         self._streak = 0
         return SplitEvent(split_id=split.id, name=split.name)
@@ -157,9 +248,17 @@ class TransitionDetector:
         if result.ratio >= self._config.detection.reset_threshold:
             return None
 
-        self._index += 1
         self._streak = 0
-        self._state = (
-            State.DONE if self._index >= len(self._config.splits) else State.NORMAL
-        )
+        if self._transition_is_start:
+            # The start gate's color cleared: begin watching splits[0] with
+            # the index unchanged (the gate precedes the first split).
+            self._transition_is_start = False
+            self._state = State.NORMAL
+            return None
+
+        # The final split never reaches WAITING_FOR_RESET (it goes straight
+        # to DONE from TRANSITION), so clearing here always yields a next
+        # split to watch.
+        self._index += 1
+        self._state = State.NORMAL
         return None

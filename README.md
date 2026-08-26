@@ -1,20 +1,21 @@
-# Roblox Visual Autosplitter
+# vis-split: Visual Autosplitter
 
-A visual autosplitter for Roblox speedruns on Linux: it watches a live capture of the game,
+A generic visual autosplitter for speedruns on Linux: it watches a live capture of any game,
 detects screen transitions by color signature, and fires splits to LiveSplit over TCP.
 Runs natively on Linux/Wayland, independent of Wine/LiveSplit.
 
 ```
 OBS Studio ──(sidecar mpegts over UDP)──> ffmpeg subprocess ──> raw BGR frames
-                                                                    │
-                                              color detector + state machine
-                                                                    │
-                                              LiveSplit Server <── split()
-                                                    127.0.0.1:16834
+                                                                  │
+                                                color detector + state machine
+                                                                  │
+                                                LiveSplit Server <── split()
+                                                      127.0.0.1:16834
 ```
 
-Status: Phases 1–4 implemented — config validation, color detection, transition state
-machine, MPEG-TS frame capture with `--live` demo. LiveSplit client comes next.
+Status: Phases 1–5 implemented — config validation, color detection, transition state
+machine, MPEG-TS frame capture with `--live` demo, LiveSplit client, `--loop` rearm,
+`--overlay` diagnostics window, `--probe` color picker.
 Design details: see `Project Overview — Roblox Visual.md`; dev rules: see `AGENTS.md`.
 
 ## Requirements
@@ -29,6 +30,33 @@ Design details: see `Project Overview — Roblox Visual.md`; dev rules: see `AGE
 ```bash
 uv sync          # creates .venv from lockfile
 uv run pytest -v # sanity check: everything green
+```
+
+## Quick start — color tuning with `--probe`
+
+1. Capture a screenshot of your game's transition (e.g., level complete flash).
+2. Point the ROI in your config to the flash region.
+3. Run `--probe` to measure the average color:
+
+```bash
+uv run python -m autosplitter.main \
+    --config configs/your-game.yaml \
+    --probe screenshot.png
+```
+
+Output includes average RGB and a ready-to-paste YAML snippet for `colors:`.
+Adjust `tolerance` based on how consistent the flash is across runs.
+
+## Game configs
+
+Per-game configs live in `configs/`:
+- `configs/start-powerless.yaml` — 15 level splits (purple portal flash)
+- `configs/template.yaml` — commented example for new games
+- `configs/roblox.yaml` — legacy Roblox placeholder
+
+Run with:
+```bash
+uv run python -m autosplitter.main --config configs/start-powerless.yaml --live --livesplit --loop
 ```
 
 ## Testing — three levels, fastest first
@@ -51,7 +79,7 @@ ffmpeg subprocess → raw pipe → frame assembly → state machine.
 
 ```bash
 uv run python -m autosplitter.main \
-    --config config.yaml \
+    --config configs/start-powerless.yaml \
     --live tests/fixtures/testsrc_64x64.ts \
     --width 64 --height 64 \
     --max-frames 40
@@ -78,7 +106,7 @@ Source exhausted (EOF).
 Configure OBS once (next section), hit **Start Recording**, then:
 
 ```bash
-uv run python -m autosplitter.main --config config.yaml --live
+uv run python -m autosplitter.main --config configs/start-powerless.yaml --live
 ```
 
 Success looks like a rolling line updating ~60×/second:
@@ -115,7 +143,7 @@ alongside it.
    | File path or URL | `udp://127.0.0.1:9733?pkt_size=1316` |
    | Video Encoder | `h264_nvenc` (GPU) or `libx264` (CPU) — never MPEG-2 |
    | Video Encoder Settings | `bf=0` for nvenc · `tune=zerolatency bf=0` for libx264 |
-   | Common FPS Value | `120` (Settings → Video) — the stream emits at this rate, *not* your monitor's Hz; must match `capture.fps` in config.yaml |
+   | Common FPS Value | `120` (Settings → Video) — the stream emits at this rate, *not* your monitor's Hz; must match `capture.fps` in your game config |
    | Rate Control / Bitrate | `CBR` / `4000 Kbps` |
    | Keyframe Interval | `1 s` |
 
@@ -123,7 +151,7 @@ alongside it.
    showed those disable NVENC's smoothed rate control and produced 10–40 s
    of added latency on scene switches. Plain `bf=0` is the known-good config.
 3. Settings → **Video** → **Output (Scaled) Resolution:** `1920×1080`
-   — this must exactly equal `capture.width` × `capture.height` in `config.yaml`,
+   — this must exactly equal `capture.width` × `capture.height` in your game config,
    regardless of canvas size (works for both 1920×1080 and 2560×1440 setups;
    both are 16:9).
 4. Apply.
@@ -134,12 +162,12 @@ Order does not matter — the detector auto-reconnects with backoff, so start
 Recording before or after launching `--live`. Streaming is untouched.
 
 - OBS: click **Start Recording** (in addition to Start Streaming if desired)
-- Terminal: `uv run python -m autosplitter.main --config config.yaml --live`
+- Terminal: `uv run python -m autosplitter.main --config configs/start-powerless.yaml --live`
 
 ## Connecting LiveSplit
 
 The detector talks to LiveSplit's built-in TCP command server running under
-Wine (default port `16834`, matching `config.yaml`).
+Wine (default port `16834`, matching your game config).
 
 1. In LiveSplit: right-click → **Control** → **Start TCP Server**.
    The server must be started manually each LiveSplit launch (or configure
@@ -147,7 +175,7 @@ Wine (default port `16834`, matching `config.yaml`).
 2. Run the detector with the flag:
 
    ```bash
-   uv run python -m autosplitter.main --config config.yaml --live --livesplit
+   uv run python -m autosplitter.main --config configs/start-powerless.yaml --live --livesplit
    ```
 
 Behavior:
@@ -169,11 +197,11 @@ Launch order (each step depends on the previous one being up):
    `capture.width/height`.
 2. **LiveSplit** under Wine → right-click → **Control** → **Start TCP
    Server**, then start your timer manually.
-3. **Sober** (Roblox) in the scene OBS is capturing.
+3. **Your game** in the scene OBS is capturing.
 4. The detector:
 
    ```bash
-   uv run python -m autosplitter.main --config config.yaml --live --livesplit --loop
+   uv run python -m autosplitter.main --config configs/start-powerless.yaml --live --livesplit --loop
    ```
 
 Healthy output looks like: rolling fps steady at `capture.fps` (±15%), no
@@ -183,16 +211,57 @@ practice runs.
 
 Notes:
 
+- The final split ends the run immediately: `DONE` is entered on the next
+  frame after the last `SPLIT fired` line, even if the victory screen keeps
+  the transition color on screen (hysteresis only shields *later* splits
+  from re-triggering; there is none after the last one).
 - `--loop` only rearms the *detection* machine after `DONE` (after
   `detection.restart_quiet_seconds` of the next run's first color staying
   quiet). **Reset your LiveSplit timer between runs yourself** — the detector
-  never starts, pauses, or resets it.
+  never starts, pauses, or resets it (exception: an optional
+  `start_transition.auto_start_timer` sends `start` once per run).
 - Without `--loop`, the detector exits after every configured split has
   fired.
+- With `--livesplit`, the detector polls LiveSplit every ~2 s for its timer
+  phase and current split name (shown in the status line as
+  `ls=Running:"Level 5"`). If LiveSplit's active segment disagrees with the
+  split the detector expects next, a one-time
+  `WARN: LiveSplit desync: ...` prints until the two agree again.
 - When something looks off, note: fps dips, a late `SPLIT` relative to the
-  on-screen transition, `DISCONNECTED` blips, or missing splits during heavy
-  packet loss (silent at the UDP layer). Each maps to a row in
-  *Troubleshooting*.
+  on-screen transition, `DISCONNECTED` blips, desync `WARN`s, or missing
+  splits during heavy packet loss (silent at the UDP layer). Each maps to a
+  row in *Troubleshooting*.
+
+## Diagnostics
+
+Add `--overlay` to the live command to open a window showing the ROI rectangle
+and a HUD over the live frame:
+
+```bash
+uv run python -m autosplitter.main --config configs/start-powerless.yaml --live --livesplit --loop --overlay
+```
+
+The window displays:
+- Green ROI rectangle (from `roi` in your game config)
+- HUD lines:
+  - `fps: XX.X` — rolling capture frame rate
+  - `match: YY.YY%` — current split's color match ratio
+  - `target: "Transition N (color)"` — active split name and color
+  - `threshold: ZZ.Z%` — split's detection threshold
+  - `state: NORMAL / TRANSITION / WAITING_FOR_RESET / DONE`
+  - `split: M/N` — current split index / total (— when DONE)
+  - `last: SS.Ss` — seconds since last split (— if none)
+  - `ls: CONNECTED / DISCONNECTED` — LiveSplit Server status
+
+Window controls:
+- **ESC** or **q** to close the window and stop the detector
+- Window close button works normally
+- Overlay refreshes at ~`capture.fps / 10` Hz (e.g. 12 Hz at 120 fps) to avoid
+  stalling the 120 fps read loop
+
+If `cv2.imshow` fails (e.g. running headless without XWayland), a one-time
+`HINT` is printed and the overlay is disabled for that run — the detector
+continues running in the terminal.
 
 ## Measuring end-to-end latency
 
@@ -201,7 +270,7 @@ pipeline by feeding the identical UDP path from a local sender with a
 burned-in millisecond clock:
 
 ```bash
-# 1. Stop OBS Recording first — two senders cannot share the UDP port.
+# 1. Stop OBS Recording first — two senders cannot share the multicast port.
 # 2. Terminal 1 — synthetic sender (testsrc displays a running clock):
 ffmpeg -re -f lavfi -i testsrc=size=1920x1080:rate=60 -pix_fmt yuv420p \
     -c:v h264_nvenc -b:v 4000k -bf 0 -g 60 -f mpegts \
@@ -231,7 +300,7 @@ delay originates in OBS's sidecar output path.
 
 ## Configuration
 
-All tunables live in `config.yaml`:
+All tunables live in your game config (e.g., `configs/start-powerless.yaml`):
 
 - `capture` — sidecar URL (`udp://`/`tcp://`), pinned 1920×1080, target fps
 - `roi` — detection region as normalized floats 0.0–1.0 (resolution-independent);
@@ -239,10 +308,10 @@ All tunables live in `config.yaml`:
 - `detection` — debounce frames required per split + hysteresis reset threshold
 - `colors` — named RGB targets with tolerance
 - `splits` — ordered transitions referencing defined colors, each with its own match threshold
-- `livesplit` — host/port for the TCP client (used by upcoming phases)
+- `livesplit` — host/port for the TCP client
 
 Invalid config fails with precise errors such as
-`config.yaml: splits[2].threshold must be between 0.0 and 1.0`.
+`configs/start-powerless.yaml: splits[2].threshold must be between 0.0 and 1.0`.
 
 ## Development
 

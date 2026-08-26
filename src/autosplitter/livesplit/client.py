@@ -11,6 +11,11 @@ Hot-loop contract: :meth:`LiveSplitClient.split` NEVER raises and never
 blocks longer than ``timeout_seconds``. A dead or hung server degrades to
 ``split() is False`` while detection continues untouched (spec section 17);
 reconnect attempts are rate-limited to one per ``reconnect_seconds``.
+
+Query commands (``getcurrenttimerphase``, ``getcurrentsplitname``) follow
+the same contract and return ``None`` on any transport failure. They are
+meant for low-rate polling (a couple of seconds apart), not per-frame use:
+each call can stall up to ``timeout_seconds`` waiting for the response line.
 """
 
 from __future__ import annotations
@@ -51,6 +56,52 @@ class LiveSplitClient:
     def split(self) -> bool:
         """Send one ``split`` command; False if the server is unreachable."""
         return self._send(b"split")
+
+    def start(self) -> bool:
+        """Send one ``start`` command; False if the server is unreachable."""
+        return self._send(b"start")
+
+    def query(self, command: str) -> str | None:
+        """Send ``command`` and return its first response line.
+
+        The trailing newline (and CR) is stripped; an intentionally empty
+        response arrives as ``""``. Returns None when the server is
+        unreachable, silent past ``timeout_seconds``, or drops the socket.
+        """
+        if not self._ensure_connected():
+            return None
+        sock = self._sock
+        if sock is None:
+            return None
+        try:
+            sock.sendall(command.encode("ascii") + b"\n")
+            deadline = time.monotonic() + self._timeout
+            data = b""
+            while b"\n" not in data:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                readable, _, _ = select.select([sock], [], [], remaining)
+                if not readable:
+                    return None
+                chunk = sock.recv(4096)
+                if not chunk:
+                    self.teardown()
+                    return None
+                data += chunk
+            line = data.split(b"\n", 1)[0]
+            return line.decode("utf-8", errors="replace").rstrip("\r")
+        except OSError:
+            self.teardown()
+            return None
+
+    def get_current_timer_phase(self) -> str | None:
+        """LiveSplit's timer phase: NotRunning / Running / Paused / Ended."""
+        return self.query("getcurrenttimerphase")
+
+    def get_current_split_name(self) -> str | None:
+        """Name of the segment LiveSplit is currently timing ('' when done)."""
+        return self.query("getcurrentsplitname")
 
     def ping(self) -> bool:
         """Round-trip liveness probe — used by tooling, not the hot loop."""

@@ -1,0 +1,105 @@
+# vis-split configuration template
+# Copy this to configs/<your-game>.yaml and fill in the values.
+#
+# Usage:
+#   uv run python -m autosplitter.main --config configs/<your-game>.yaml --live --livesplit --loop
+#
+# To sample colors from screenshots:
+#   uv run python -m autosplitter.main --config configs/<your-game>.yaml --probe screenshot.png
+
+capture:
+  fps: 60                          # OBS Common FPS Value (Settings → Video)
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316"
+  width: 1920                      # Sidecar Output (scaled) Resolution width
+  height: 1080                     # Sidecar Output (scaled) Resolution height
+
+roi:
+  # Region of interest where transition colors appear.
+  # Use normalized 0.0-1.0 coordinates (independent of capture resolution).
+  # Two equivalent forms (pick one):
+  #
+  # Form 1: origin + size
+  x: 0.25
+  y: 0.25
+  width: 0.50
+  height: 0.50
+  #
+  # Form 2: corner endpoints
+  # x1: 0.25
+  # y1: 0.25
+  # x2: 0.75
+  # y2: 0.75
+
+detection:
+  # Debounce: consecutive frames at/above threshold before split fires.
+  # Frame-counted, so scales with capture.fps (e.g. 6 frames @ 120fps = 50ms).
+  required_frames: 3
+  # Hysteresis: after a split, ratio must drop BELOW this to re-arm.
+  # Must be < threshold. Typical: 0.80
+  reset_threshold: 0.80
+  # --loop only: seconds of quiet (first split's color below reset_threshold)
+  # before the state machine rearms for another run.
+  restart_quiet_seconds: 3.0
+
+start_transition:
+  # Optional: detect the menu → gameplay transition to auto-start the run.
+  # If present, the state machine waits for this color before entering
+  # the normal split sequence. Useful for games with a clear "run start" visual.
+  # color: name of a color defined in the colors section above
+  # threshold: ratio (0.0-1.0) of ROI pixels matching the color to trigger
+  # roi_override: optional; if omitted, uses the main ROI
+  # auto_start_timer: if true, sends `start` to LiveSplit Server when detected
+  # name: "Run Start"
+  # color: "menu_transition"
+  # threshold: 0.85
+  # roi_override:
+  #   x: 0.3
+  #   y: 0.3
+  #   width: 0.4
+  #   height: 0.4
+  # auto_start_timer: false
+
+colors:
+  # Define each distinct transition color here.
+  # Use --probe to measure: uv run ... --probe screenshot.png
+  # rgb: [R, G, B] in 0-255 (config is RGB; converted to BGR internally)
+  # tolerance: ± per-channel range for matching (typical 15-35)
+  transition_color:
+    rgb: [255, 0, 0]          # example: red flash
+    tolerance: 20
+  another_color:
+    rgb: [0, 255, 0]          # example: green flash
+    tolerance: 25
+
+splits:
+  # Ordered list of splits. Each references a color name above.
+  # threshold: ratio (0.0-1.0) of ROI pixels matching the color to trigger.
+  # Typical: 0.85-0.95 for clean flashes.
+  - id: 1
+    name: "Split Name"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 2
+    name: "Next Split"
+    color: another_color
+    threshold: 0.90
+
+  # Add more splits as needed...
+
+livesplit:
+  host: "127.0.0.1"
+  port: 16834
+  # Socket timeout (seconds) — bounds how long a hung server can stall detection.
+  timeout_seconds: 0.25
+  # Reconnect attempt interval (seconds) while LiveSplit Server is down.
+  reconnect_seconds: 5.0
+
+# record:
+#   # Path template for recordings. Variables: {game}, {date}, {time},
+#   # {datetime}, {attempt} (auto-incremented, zero-padded to 4 digits).
+#   path_template: "recordings/{game}_{datetime}_{attempt:04d}.mkv"
+#   # Convert .mkv to this format after the run (best-effort, .mkv kept).
+#   convert_to: "mp4"
+#   # Keep recording for this many seconds after the last split fires.
+#   post_run_seconds: 3.0

@@ -16,7 +16,7 @@ from typing import cast
 import cv2
 import numpy as np
 
-from autosplitter.config import Color, Config, Roi, Split
+from autosplitter.config import Color, Config, Roi, Split, StartTransition
 
 
 @dataclass(frozen=True)
@@ -102,6 +102,10 @@ class ColorDetector:
         )
 
 
-def build_detector(config: Config, split: Split) -> ColorDetector:
+def build_detector(config: Config, split: Split | StartTransition) -> ColorDetector:
     """Resolve a split's named color against the config and build its detector."""
-    return ColorDetector(config.roi, config.color(split.color))
+    color_name = split.color
+    roi = config.roi
+    if isinstance(split, StartTransition) and split.roi_override is not None:
+        roi = split.roi_override
+    return ColorDetector(roi, config.color(color_name))

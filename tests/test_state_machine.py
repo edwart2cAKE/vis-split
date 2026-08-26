@@ -21,11 +21,13 @@ from autosplitter.config import (
     Detection,
     LiveSplit,
     Split,
+    StartTransition,
     load,
 )
 from autosplitter.detection import (
     DetectionResult,
     SplitEvent,
+    StartEvent,
     State,
     TransitionDetector,
 )
@@ -43,6 +45,7 @@ def make_config(
     reset_threshold: float = 0.80,
     fps: float = 60.0,
     restart_quiet_seconds: float = 3.0,
+    start_transition: StartTransition | None = None,
 ) -> Config:
     if splits is None:
         splits = (
@@ -60,6 +63,7 @@ def make_config(
         colors={"black": BLACK, "white": WHITE},
         splits=splits,
         livesplit=LiveSplit(host="127.0.0.1", port=16834),
+        start_transition=start_transition,
     )
 
 
@@ -67,8 +71,8 @@ def res(ratio: float) -> DetectionResult:
     return DetectionResult(matched_pixels=int(ratio * 100), total_pixels=100, ratio=ratio)
 
 
-def events_of(machine: TransitionDetector, ratios: list[float]) -> list[SplitEvent]:
-    out: list[SplitEvent] = []
+def events_of(machine: TransitionDetector, ratios: list[float]) -> list[SplitEvent | StartEvent]:
+    out: list[SplitEvent | StartEvent] = []
     for ratio in ratios:
         event = machine.feed_result(res(ratio))
         if event is not None:
@@ -134,6 +138,7 @@ class TestTransitionTable:
             assert machine.state is expected_state, f"ratio {ratio}"
             if expected_event is not None:
                 assert event is not None
+                assert isinstance(event, SplitEvent)
                 seen_events.append((event.split_id, event.name))
             else:
                 assert event is None
@@ -218,19 +223,127 @@ class TestResetHysteresis:
 
 
 # ---------------------------------------------------------------------------
+# Optional start_transition gate
+# ---------------------------------------------------------------------------
+
+
+class TestStartGate:
+    def _machine(
+        self, splits: tuple[Split, ...] | None = None
+    ) -> TransitionDetector:
+        return TransitionDetector(
+            make_config(
+                splits=splits,
+                required_frames=1,
+                start_transition=StartTransition(
+                    name="Run Start", color="black", threshold=0.85
+                ),
+            )
+        )
+
+    def test_initial_state_waits_for_start(self) -> None:
+        machine = self._machine()
+
+        assert machine.state is State.WAITING_FOR_START
+        assert machine.waiting_for_start
+
+    def test_start_settles_to_first_split_without_skipping(self) -> None:
+        """Regression: clearing the start gate must NOT advance the index.
+
+        The gate precedes the first split, so after its color clears the
+        machine watches splits[0] — previously it jumped to splits[1].
+        """
+        machine = self._machine()
+        assert machine.feed_result(res(1.0)) == StartEvent(name="Run Start")
+        assert machine.state is State.TRANSITION
+
+        machine.feed_result(res(1.0))       # settle into the reset wait
+        assert machine.state is State.WAITING_FOR_RESET
+
+        machine.feed_result(res(0.10))      # gate color cleared
+        assert machine.state is State.NORMAL
+        current = machine.current_split
+        assert current is not None and current.id == 1
+
+    def test_single_split_game_not_done_right_after_start(self) -> None:
+        """One split + a start gate: after the gate clears, that split must
+        still be watched (never straight to DONE), and firing it ends the run."""
+        only = (Split(id=1, name="Only", color="black", threshold=0.95),)
+        machine = self._machine(only)
+
+        assert machine.feed_result(res(1.0)) == StartEvent(name="Run Start")
+        machine.feed_result(res(1.0))
+        machine.feed_result(res(0.10))
+        assert machine.state is State.NORMAL
+        current = machine.current_split
+        assert current is not None and current.id == 1
+
+        assert machine.feed_result(res(1.0)) == SplitEvent(split_id=1, name="Only")
+        machine.feed_result(res(1.0))
+        assert machine.finished
+
+    def test_same_color_start_and_first_split_full_flow(self) -> None:
+        """User scenario: gate and Level 1 share one color (dark loading
+        screen). The gate must clear before Level 1 arms, then Level 1
+        fires from the very same color."""
+        machine = self._machine()
+
+        assert machine.feed_result(res(1.0)) == StartEvent(name="Run Start")
+        machine.feed_result(res(1.0))
+        machine.feed_result(res(1.0))       # still lit: hysteresis dead zone
+        assert machine.state is State.WAITING_FOR_RESET
+
+        machine.feed_result(res(0.20))      # level 1 gameplay appears
+        assert machine.state is State.NORMAL
+
+        assert machine.feed_result(res(1.0)) == SplitEvent(split_id=1, name="First")
+        machine.feed_result(res(1.0))
+        assert machine.state is State.WAITING_FOR_RESET
+        machine.feed_result(res(0.20))
+        current = machine.current_split
+        assert current is not None and current.id == 2
+
+    def test_reset_returns_to_waiting_for_start(self) -> None:
+        machine = self._machine()
+        machine.feed_result(res(1.0))
+
+        machine.reset()
+
+        assert machine.state is State.WAITING_FOR_START
+
+
+# ---------------------------------------------------------------------------
 # Completion (DONE) and reset
 # ---------------------------------------------------------------------------
 
 
 class TestDoneState:
+    def test_last_split_enters_done_even_while_color_persists(self) -> None:
+        """Regression: a persistent victory screen must not stall the run.
+
+        Hysteresis exists to shield a LATER split from re-triggering; the
+        final split has none, so it skips WAITING_FOR_RESET entirely —
+        even when the ratio is still far above reset_threshold.
+        """
+        machine = TransitionDetector(make_config(required_frames=1))
+        machine.feed_result(res(1.0))       # fire split 1
+        machine.feed_result(res(0.50))      # clear -> NORMAL on split 2
+        machine.feed_result(res(1.0))       # fire split 2 (last)
+        assert machine.state is State.TRANSITION
+
+        # Color stays fully lit; the run must still end immediately.
+        machine.feed_result(res(1.0))
+        assert machine.state is State.DONE
+        assert machine.finished
+
     def test_last_clear_enters_done(self) -> None:
         machine = TransitionDetector(make_config(required_frames=1))
         machine.feed_result(res(1.0))       # fire split 1
         machine.feed_result(res(0.50))      # clear -> NORMAL on split 2
-        machine.feed_result(res(1.0))       # fire split 2
+        machine.feed_result(res(1.0))       # fire split 2 (last)
 
         assert machine.state is State.TRANSITION
-        machine.feed_result(res(0.50))      # clear -> DONE
+        machine.feed_result(res(0.50))      # next frame -> DONE either way
 
         assert machine.state is State.DONE
         assert machine.finished
@@ -340,6 +453,7 @@ class TestFeedFrameIntegration:
         for frame in sequence:
             event = machine.feed_frame(frame)
             if event is not None:
+                assert isinstance(event, SplitEvent)
                 fired.append(event)
 
         assert [(e.split_id, e.name) for e in fired] == [

@@ -12,3 +12,6 @@ dist/
 
 # Runtime artifacts
 snap.png
+recordings/
+test_recordings/
+*.mkv

@@ -1,6 +1,6 @@
 capture:
   fps: 120
-  stream_url: "udp://127.0.0.1:9733?pkt_size=1316&fifo_size=42552&overrun_nonfatal=1&buffer_size=212992"
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316"
   width: 1920
   height: 1080
 

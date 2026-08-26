@@ -146,6 +146,56 @@ class TestWireFormat:
         assert client.connected is False
 
 
+class TestQueries:
+    def test_phase_roundtrip_strips_crlf(self, server: RestartableServer) -> None:
+        server.auto_reply = b"Running\r\n"
+        client = make_client(server.port)
+
+        assert client.get_current_timer_phase() == "Running"
+        client.close()
+
+    def test_split_name_roundtrip(self, server: RestartableServer) -> None:
+        server.auto_reply = b"Level 5\n"
+        client = make_client(server.port)
+
+        assert client.get_current_split_name() == "Level 5"
+        client.close()
+
+    def test_empty_response_is_empty_string(self, server: RestartableServer) -> None:
+        """LiveSplit answers with a bare CRLF when the run is finished."""
+        server.auto_reply = b"\r\n"
+        client = make_client(server.port)
+
+        assert client.get_current_split_name() == ""
+        client.close()
+
+    def test_query_returns_none_when_unreachable(self) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        addr = cast("tuple[str, int]", listener.getsockname())
+        free_port = addr[1]
+        listener.close()
+
+        client = make_client(free_port)
+        started = time.monotonic()
+
+        assert client.query("getcurrenttimerphase") is None
+        assert time.monotonic() - started < 1.0
+        assert client.connected is False
+
+    def test_query_returns_none_when_server_silent(
+        self, server: RestartableServer
+    ) -> None:
+        """Server accepts but never answers: bail out within timeout budget."""
+        server.auto_reply = None
+        client = make_client(server.port)
+
+        started = time.monotonic()
+        assert client.query("getcurrenttimerphase") is None
+        assert time.monotonic() - started < 1.5
+        client.close()
+
+
 class TestResilience:
     def test_unreachable_server_returns_false_quickly(self) -> None:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

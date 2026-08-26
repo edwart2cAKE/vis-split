@@ -1,11 +1,11 @@
 [project]
-name = "autosplitter"
+name = "vis-split"
 version = "0.1.0"
-description = "Roblox visual autosplitter: OBS capture -> color transition detection -> LiveSplit splits"
+description = "Visual autosplitter: OBS capture -> color transition detection -> LiveSplit splits"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
-    "opencv-python-headless>=4.10",
+    "opencv-python>=4.10",
     "pyyaml>=6.0",
 ]
 

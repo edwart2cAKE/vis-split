@@ -1,0 +1,65 @@
+# Test config: splits on white screen flashes (4 sections).
+# Use with a synthetic test source or any game with white transitions.
+
+capture:
+  fps: 60
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316"
+  width: 1920
+  height: 1080
+
+roi:
+  x: 0.25
+  y: 0.25
+  width: 0.25
+  height: 0.25
+
+detection:
+  required_frames: 3
+  reset_threshold: 0.80
+  restart_quiet_seconds: 3.0
+
+colors:
+  white:
+    rgb: [255, 255, 255]
+    tolerance: 30
+  black:
+    rgb: [0, 0, 0]
+    tolerance: 20
+
+start_transition:
+  name: "Run Start"
+  color: black
+  threshold: 0.85
+  auto_start_timer: true
+
+splits:
+  - id: 1
+    name: "Section 1"
+    color: white
+    threshold: 0.90
+
+  - id: 2
+    name: "Section 2"
+    color: white
+    threshold: 0.90
+
+  - id: 3
+    name: "Section 3"
+    color: white
+    threshold: 0.90
+
+  - id: 4
+    name: "Section 4 (End)"
+    color: white
+    threshold: 0.90
+
+livesplit:
+  host: "127.0.0.1"
+  port: 16834
+  timeout_seconds: 0.25
+  reconnect_seconds: 5.0
+
+record:
+  path_template: "recordings/test_{datetime}_{attempt:04d}.mkv"
+  convert_to: "mp4"
+  post_run_seconds: 10.0

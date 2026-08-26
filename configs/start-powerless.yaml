@@ -1,0 +1,161 @@
+capture:
+  fps: 120
+  # OBS sidecar output (Recording -> Custom Output (FFmpeg), container mpegts).
+  # Pin the sidecar's Output (scaled) Resolution to width x height below,
+  # regardless of canvas size (works for both 1920x1080 and 2560x1440 setups).
+  # Use --record PATH to simultaneously write a .mkv copy (single ffmpeg process).
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316"
+  width: 1920
+  height: 1080
+
+roi:
+  # Two equivalent forms, all values normalized 0.0-1.0:
+  #
+  # 1) origin + size:
+  #      x: 0.25
+  #      y: 0.25
+  #      width: 0.50
+  #      height: 0.50
+  #
+  # 2) corner endpoints (x1,y1) = top-left, (x2,y2) = bottom-right:
+  #      x1: 0.25
+  #      y1: 0.25
+  #      x2: 0.75
+  #      y2: 0.75
+  x: 0.35
+  y: 0.30
+  width: 0.30
+  height: 0.30
+
+detection:
+  # Debounce is frame-counted: 3 frames at 60 fps ~= 50 ms of flicker immunity.
+  required_frames: 3
+  reset_threshold: 0.80
+  # --loop only: after DONE, rearm once the NEXT run's first split color
+  # stays below reset_threshold for this many seconds.
+  restart_quiet_seconds: 3.0
+
+start_transition:
+  # Menu → Level 1 transition (Start Powerless).
+  # Detects the fade/load screen when starting a new run.
+  # Color: dark gray loading screen ~RGB(22, 13, 18).
+  # Tune with: uv run python -m autosplitter.main --config configs/start-powerless.yaml --probe screenshot.png
+  name: "Run Start"
+  color: transition_color
+  threshold: 0.85
+  # Optional: auto-start LiveSplit timer when start detected
+  auto_start_timer: true
+
+colors:
+  # Purple portal flash at level complete (Start Powerless).
+  # Estimated from gameplay footage: dominant purple ~RGB(180, 50, 200).
+  # Tune with: uv run python -m autosplitter.main --config configs/start-powerless.yaml --probe screenshot.png
+  purple_portal:
+    rgb: [180, 50, 200]
+    tolerance: 30
+
+  # Optional: green arrow powerup pickup flash.
+  green_arrow:
+    rgb: [50, 200, 50]
+    tolerance: 25
+
+  transition_color:
+    rgb: [22, 13, 18]
+    tolerance: 10
+
+
+
+splits:
+  # 15 levels: each level ends at purple portal.
+  - id: 1
+    name: "Level 1"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 2
+    name: "Level 2"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 3
+    name: "Level 3"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 4
+    name: "Level 4"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 5
+    name: "Level 5"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 6
+    name: "Level 6"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 7
+    name: "Level 7"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 8
+    name: "Level 8"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 9
+    name: "Level 9"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 10
+    name: "Level 10"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 11
+    name: "Level 11"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 12
+    name: "Level 12"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 13
+    name: "Level 13"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 14
+    name: "Level 14"
+    color: transition_color
+    threshold: 0.90
+
+  - id: 15
+    name: "Level 15 (Finish)"
+    color: transition_color
+    threshold: 0.90
+
+livesplit:
+  host: "127.0.0.1"
+  port: 16834
+  # Socket-op budget (bounds a hung-server stall to this many seconds) and
+  # the cadence of reconnect attempts while LiveSplit Server is down.
+  timeout_seconds: 0.25
+  reconnect_seconds: 5.0
+
+record:
+  # Path template for recordings. Variables: {game}, {date}, {time},
+  # {datetime}, {attempt} (auto-incremented, zero-padded to 4 digits).
+  path_template: "recordings/{game}_{datetime}_{attempt:04d}.mkv"
+  # Convert .mkv to this format after the run (best-effort, .mkv kept).
+  convert_to: "mp4"
+  # Keep recording for this many seconds after the last split fires
+  # (captures victory screen / final time display).
+  post_run_seconds: 30.0

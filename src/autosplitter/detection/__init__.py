@@ -8,6 +8,7 @@ from autosplitter.detection.color_detector import (
 )
 from autosplitter.detection.state_machine import (
     SplitEvent,
+    StartEvent,
     State,
     TransitionDetector,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "ColorDetector",
     "DetectionResult",
     "SplitEvent",
+    "StartEvent",
     "State",
     "TransitionDetector",
     "build_detector",

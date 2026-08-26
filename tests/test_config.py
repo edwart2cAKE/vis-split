@@ -47,10 +47,7 @@ class TestValidConfig:
 
         assert cfg.capture == Capture(
             fps=120.0,
-            stream_url=(
-                "udp://127.0.0.1:9733"
-                + "?pkt_size=1316&fifo_size=42552&overrun_nonfatal=1&buffer_size=212992"
-            ),
+            stream_url="udp://127.0.0.1:9733?pkt_size=1316",
             width=1920,
             height=1080,
         )
@@ -993,4 +990,241 @@ class TestCaptureAndLivesplit:
         )
 
         with pytest.raises(ConfigError, match="missing required section 'detection'"):
+            load(path)
+
+
+# ---------------------------------------------------------------------------
+# Record section
+
+
+class TestRecord:
+    def test_record_absent(self) -> None:
+        cfg = load_fixture()
+        assert cfg.record is None
+
+    def test_record_loads(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            record:
+              path_template: "recordings/{game}_{datetime}_{attempt:04d}.mkv"
+              convert_to: "mp4"
+            """,
+        )
+        cfg = load(path)
+        assert cfg.record is not None
+        assert cfg.record.path_template == "recordings/{game}_{datetime}_{attempt:04d}.mkv"
+        assert cfg.record.convert_to == "mp4"
+
+    def test_record_convert_to_none(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            record:
+              path_template: "recordings/run.mkv"
+            """,
+        )
+        cfg = load(path)
+        assert cfg.record is not None
+        assert cfg.record.path_template == "recordings/run.mkv"
+        assert cfg.record.convert_to is None
+
+    def test_record_empty_mapping_ignored(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            record: {}
+            """,
+        )
+        cfg = load(path)
+        assert cfg.record is None
+
+    def test_record_missing_path_template(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            record:
+              convert_to: "mp4"
+            """,
+        )
+        with pytest.raises(
+            ConfigError, match=r"record\.path_template must be a non-empty string"
+        ):
+            load(path)
+
+    def test_record_empty_path_template(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            record:
+              path_template: ""
+            """,
+        )
+        with pytest.raises(
+            ConfigError, match=r"record\.path_template must be a non-empty string"
+        ):
+            load(path)
+
+    def test_record_invalid_convert_to(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            record:
+              path_template: "recordings/run.mkv"
+              convert_to: ""
+            """,
+        )
+        with pytest.raises(
+            ConfigError, match=r"record\.convert_to must be a non-empty string or null"
+        ):
             load(path)
