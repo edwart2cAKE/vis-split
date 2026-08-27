@@ -42,6 +42,7 @@ from autosplitter.detection.color_detector import (
     DetectionResult,
     build_detector,
 )
+from autosplitter.detection.ocr_detector import OcrDetector, OcrWorker
 
 
 class State(Enum):
@@ -93,6 +94,15 @@ class TransitionDetector:
         # decides whether settling waits for the gate color and keeps the
         # split index, or advances / ends the run.
         self._transition_is_start: bool = False
+
+        # OCR worker (optional — augments color detection by re-syncing index)
+        self._ocr_worker: OcrWorker | None = None
+        if config.ocr is not None:
+            ocr_detector = OcrDetector(
+                config.ocr.roi, config.ocr.engine, config.ocr.patterns
+            )
+            self._ocr_worker = OcrWorker(ocr_detector, config.ocr.poll_interval_frames)
+            self._ocr_worker.start()
 
     @property
     def state(self) -> State:
@@ -161,6 +171,37 @@ class TransitionDetector:
             self._state = State.WAITING_FOR_START
         else:
             self._state = State.NORMAL
+
+    def check_ocr_resync(self, frame: np.ndarray, frame_idx: int) -> None:
+        """Submit frame to OCR worker and re-sync index if needed.
+
+        Called once per frame from the hot loop.  Cost: <3µs (two lock ops).
+        """
+        if self._ocr_worker is None:
+            return
+        self._ocr_worker.submit_frame(frame, frame_idx)
+        result = self._ocr_worker.poll_result()
+        if result is None or result.split_index is None:
+            return
+        if result.frame_number != frame_idx:
+            return
+        self._resync_index(result.split_index)
+
+    def _resync_index(self, new_index: int) -> None:
+        """Force-set the split index when OCR disagrees with color detection."""
+        if self._state in (State.TRANSITION, State.WAITING_FOR_RESET, State.DONE):
+            return
+        if not 0 <= new_index < len(self._config.splits):
+            return
+        if new_index == self._index:
+            return
+        self._index = new_index
+        self._streak = 0
+
+    def shutdown_ocr(self) -> None:
+        """Stop the OCR worker thread."""
+        if self._ocr_worker is not None:
+            self._ocr_worker.close()
 
     def feed_frame(self, frame: np.ndarray) -> SplitEvent | StartEvent | None:
         """Detect the active split's color on this frame, then advance."""

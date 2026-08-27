@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 
@@ -127,7 +128,7 @@ class TestMpegTsFrameSource:
 
         (cmd,) = captured
         (popen_kwargs,) = captured_kwargs
-        assert popen_kwargs == {"stdout": subprocess.PIPE}
+        assert popen_kwargs == {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
         i_index = cmd.index("-i")
         assert cmd[i_index + 1] == url
         for expected in (
@@ -190,3 +191,70 @@ class TestMpegTsFrameSource:
                 assert source.read() is None
         finally:
             source.close()
+
+    def test_nonblocking_backoff_does_not_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After a spawn failure, subsequent reads return None without sleeping."""
+        def fake_popen(cmd: list[str], **kwargs: object) -> object:
+            raise OSError("no process")
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        source = MpegTsFrameSource("udp://127.0.0.1:9733", WIDTH, HEIGHT)
+
+        t0 = time.monotonic()
+        for _ in range(4):
+            source.read()
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.5
+
+    def test_spawn_failure_sets_next_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After a failed spawn, _next_spawn is set so no re-attempt is made immediately."""
+        def fake_popen(cmd: list[str], **kwargs: object) -> object:
+            raise OSError("no process")
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        source = MpegTsFrameSource("udp://127.0.0.1:9733", WIDTH, HEIGHT)
+
+        assert source.read() is None
+        assert source._backoff >= 0.5
+        assert source._next_spawn > time.monotonic()
+
+    def test_successful_frame_resets_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A successful frame read resets the backoff counter."""
+        import select as select_mod
+
+        class FakeStream:
+            def __init__(self) -> None:
+                self._buf = solid_frames(2, WIDTH, HEIGHT)
+                self._pos = 0
+
+            def fileno(self) -> int:
+                return 5
+
+            def readinto(self, b: memoryview, /) -> int:
+                chunk = self._buf[self._pos : self._pos + len(b)]
+                self._pos += len(chunk)
+                return len(chunk)
+
+        class FakeProc:
+            stdout: FakeStream = FakeStream()
+
+            def kill(self) -> None:
+                pass
+
+        def fake_popen(cmd: list[str], **kwargs: object) -> FakeProc:
+            return FakeProc()
+
+        def fake_select(rlist: object, wlist: object, xlist: object, timeout: float = 0.0) -> tuple[list[int], list[int], list[int]]:
+            return ([1], [], [])
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(select_mod, "select", fake_select)
+
+        source = MpegTsFrameSource("udp://127.0.0.1:9733", WIDTH, HEIGHT)
+
+        frame = source.read()
+        assert frame is not None
+        assert source._backoff == 0.0

@@ -65,6 +65,13 @@ def _print_summary(label: str, cfg: Config) -> None:
         print(
             f"  start    : {st.name}  color={st.color} threshold={st.threshold * 100:.1f}%{roi_note}{auto_start_note}"
         )
+    if cfg.ocr is not None:
+        ocr = cfg.ocr
+        print(
+            f"  ocr      : roi x={ocr.roi.x:g} y={ocr.roi.y:g} w={ocr.roi.width:g} h={ocr.roi.height:g}"
+            + f" engine={ocr.engine.language} psm={ocr.engine.psm}"
+            + f" poll={ocr.poll_interval_frames} patterns={len(ocr.patterns)}"
+        )
 
 
 def _load_image(image_path: str) -> np.ndarray | None:
@@ -359,6 +366,7 @@ def _run_live(
 
             ratio = _frame_ratio(machine, frame)
             event = machine.feed_result(res_from_ratio(ratio))
+            machine.check_ocr_resync(frame, frame_index)
 
             # --loop rearm watch: once finished, track the NEXT run's first
             # split color (or start color if start_transition configured);
@@ -515,6 +523,7 @@ def _run_live(
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        machine.shutdown_ocr()
         source.close()
         if client is not None:
             client.close()

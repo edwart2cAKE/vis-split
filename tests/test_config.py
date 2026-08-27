@@ -1228,3 +1228,238 @@ class TestRecord:
             ConfigError, match=r"record\.convert_to must be a non-empty string or null"
         ):
             load(path)
+
+
+class TestOcr:
+    def test_ocr_absent(self) -> None:
+        cfg = load_fixture()
+        assert cfg.ocr is None
+
+    def test_ocr_loads(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            ocr:
+              roi:
+                x: 0.10
+                y: 0.01
+                width: 0.04
+                height: 0.04
+              engine:
+                language: "eng"
+                psm: 10
+                min_confidence: 70.0
+              patterns:
+                "Level\\\\s*(\\\\d+)": null
+                "Stage (\\\\d+)": 2
+              poll_interval_frames: 5
+            """,
+        )
+        cfg = load(path)
+        assert cfg.ocr is not None
+        assert cfg.ocr.roi.x == 0.10
+        assert cfg.ocr.roi.width == 0.04
+        assert cfg.ocr.engine.language == "eng"
+        assert cfg.ocr.engine.psm == 10
+        assert cfg.ocr.engine.min_confidence == 70.0
+        assert len(cfg.ocr.patterns) == 2
+        assert cfg.ocr.patterns[0].regex == "Level\\s*(\\d+)"
+        assert cfg.ocr.patterns[0].split_index is None
+        assert cfg.ocr.patterns[1].regex == "Stage (\\d+)"
+        assert cfg.ocr.patterns[1].split_index == 2
+        assert cfg.ocr.poll_interval_frames == 5
+
+    def test_ocr_defaults(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            ocr:
+              roi:
+                x: 0.10
+                y: 0.01
+                width: 0.04
+                height: 0.04
+            """,
+        )
+        cfg = load(path)
+        assert cfg.ocr is not None
+        assert cfg.ocr.engine.language == "eng"
+        assert cfg.ocr.engine.psm == 7
+        assert cfg.ocr.engine.min_confidence == 60.0
+        assert cfg.ocr.patterns == ()
+        assert cfg.ocr.poll_interval_frames == 3
+
+    def test_ocr_invalid_psm(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            ocr:
+              roi:
+                x: 0.10
+                y: 0.01
+                width: 0.04
+                height: 0.04
+              engine:
+                psm: 15
+            """,
+        )
+        with pytest.raises(ConfigError, match=r"ocr\.engine\.psm must be between 0 and 13"):
+            load(path)
+
+    def test_ocr_invalid_regex(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            ocr:
+              roi:
+                x: 0.10
+                y: 0.01
+                width: 0.04
+                height: 0.04
+              patterns:
+                "[invalid": null
+            """,
+        )
+        with pytest.raises(ConfigError, match=r"not a valid regex"):
+            load(path)
+
+    def test_ocr_poll_interval_at_least_one(self, tmp_path: Path) -> None:
+        path = write_config(
+            tmp_path,
+            """
+            capture:
+              fps: 60
+              stream_url: "udp://127.0.0.1:9733"
+              width: 1920
+              height: 1080
+            roi:
+              x: 0.25
+              y: 0.25
+              width: 0.50
+              height: 0.50
+            detection:
+              required_frames: 3
+              reset_threshold: 0.80
+            colors:
+              black:
+                rgb: [0, 0, 0]
+                tolerance: 15
+            splits:
+              - id: 1
+                name: "S"
+                color: black
+                threshold: 0.95
+            livesplit:
+              host: "127.0.0.1"
+              port: 16834
+            ocr:
+              roi:
+                x: 0.10
+                y: 0.01
+                width: 0.04
+                height: 0.04
+              poll_interval_frames: 0
+            """,
+        )
+        with pytest.raises(ConfigError, match=r"poll_interval_frames must be at least 1"):
+            load(path)

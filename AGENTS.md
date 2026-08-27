@@ -65,3 +65,74 @@ Minimal set: OpenCV, NumPy, PyYAML, plus whatever the chosen OBS capture method 
 - `MpegTsFrameSource` auto-reconnects with backoff for udp/tcp locations only; file locations play once then report exhausted (no replay loop).
 - Handle failures gracefully: lost capture → reconnect instead of crash; LiveSplit down → keep detecting, report `DISCONNECTED`, reconnect when available.
 - Invalid config must fail with precise errors (e.g. `configs/your-game.yaml: splits[2].threshold must be between 0.0 and 1.0`), not stack traces.
+
+## Multi-Agent Development Protocol
+
+Phases 1–7 are the established project baseline.
+
+Do not rewrite or refactor completed phases unless the current task explicitly
+requires it and the orchestrator has approved the architectural change.
+
+Every non-trivial change should follow:
+
+1. Explorer — understand the existing implementation.
+2. Researcher — investigate external dependencies or unknown technical behavior
+   when necessary.
+3. Architect — determine the smallest safe architectural change.
+4. Implementer — implement only the approved design.
+5. Test Engineer — attempt to break the implementation.
+6. Reviewer — independently review the implementation.
+7. Integration Validator — validate the runtime pipeline when applicable.
+
+The implementer must not approve its own implementation.
+
+### Baseline protection
+
+- Preserve existing behavior unless the task explicitly changes it.
+- Do not remove or weaken existing tests.
+- Do not perform unrelated refactors.
+- Do not introduce dependencies without justification.
+- Do not change public interfaces without architectural justification.
+- Treat phase documentation as authoritative.
+
+### Required verification
+
+For production-code changes, run:
+
+    uv run pytest -v
+    uvx ruff check .
+    uv run basedpyright src tests
+    uv run python -m autosplitter.main --check
+
+Then run the applicable phase/demo or integration command.
+
+### Visual detection requirements
+
+Changes to detection behavior should include positive, negative,
+tolerance-boundary, debounce, hysteresis/reset, and duplicate-split cases.
+
+### Capture requirements
+
+Changes to capture must consider partial reads, EOF, reconnect behavior,
+resolution mismatch, frame-rate stability, packet loss, and decoder startup.
+
+### LiveSplit requirements
+
+Changes to LiveSplit integration must consider unavailable-server,
+reconnect, `split\n`, duplicate-split, and desynchronization behavior.
+
+### Performance requirements
+
+The frame-processing hot path is performance-sensitive.
+
+- Keep ROI cropping before image processing.
+- Keep per-frame processing allocation-free where practical.
+- Do not introduce per-pixel Python loops.
+- Do not trade sustained capture FPS for unnecessary abstraction.
+- Performance-sensitive changes should include before/after measurements.
+
+### Agent permissions
+
+Read-only agents must not modify production code.
+The reviewer is independent of the implementer and must not silently repair
+the implementation while reviewing it.

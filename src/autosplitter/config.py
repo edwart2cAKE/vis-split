@@ -120,6 +120,41 @@ class Record:
 
 
 @dataclass(frozen=True)
+class OcrEngine:
+    """Tesseract engine settings for OCR-based split detection."""
+
+    language: str = "eng"
+    psm: int = 7
+    min_confidence: float = 60.0
+
+
+@dataclass(frozen=True)
+class OcrPattern:
+    """A regex pattern for matching OCR text to a split index.
+
+    If split_index is None, the first digit group in the match is used
+    as a 1-based split id (e.g. "Level 3" → split index 2).
+    """
+
+    regex: str
+    split_index: int | None = None
+
+
+@dataclass(frozen=True)
+class OcrConfig:
+    """OCR-based split number detection (augments color detection).
+
+    Reads text from a separate ROI and re-syncs the split index when
+    the recognized number diverges from the color-driven index.
+    """
+
+    roi: Roi
+    engine: OcrEngine = OcrEngine()
+    patterns: tuple[OcrPattern, ...] = ()
+    poll_interval_frames: int = 3
+
+
+@dataclass(frozen=True)
 class Config:
     capture: Capture
     roi: Roi
@@ -129,6 +164,7 @@ class Config:
     livesplit: LiveSplit
     start_transition: StartTransition | None = None
     record: Record | None = None
+    ocr: OcrConfig | None = None
 
     def color(self, name: str) -> Color:
         return self.colors[name]
@@ -174,6 +210,7 @@ def load(path: str | Path = "config.yaml") -> Config:
     livesplit = _parse_livesplit(data.get("livesplit"), label)
     start_transition = _parse_start_transition(data.get("start_transition"), colors, label)
     record = _parse_record(data.get("record"), label)
+    ocr = _parse_ocr(data.get("ocr"), label)
 
     return Config(
         capture=capture,
@@ -184,6 +221,7 @@ def load(path: str | Path = "config.yaml") -> Config:
         livesplit=livesplit,
         start_transition=start_transition,
         record=record,
+        ocr=ocr,
     )
 
 
@@ -569,4 +607,96 @@ def _parse_record(value: object, label: str) -> Record | None:
         path_template=path_template,
         convert_to=convert_to if isinstance(convert_to, str) else None,
         post_run_seconds=float(post_run),
+    )
+
+
+def _parse_ocr(value: object, label: str) -> OcrConfig | None:
+    """Parse optional ocr section.
+
+    Returns None if the section is absent or empty (OCR disabled).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label}: ocr must be a mapping")
+    data = cast(dict[str, object], value)
+    if not data:
+        return None
+
+    roi = _parse_roi(data.get("roi"), f"{label}: ocr")
+
+    # Engine settings
+    engine_data = data.get("engine", {})
+    if engine_data is None:
+        engine_data = {}
+    if not isinstance(engine_data, dict):
+        raise ConfigError(f"{label}: ocr.engine must be a mapping")
+    engine_raw = cast(dict[str, object], engine_data)
+
+    language = engine_raw.get("language", "eng")
+    if not isinstance(language, str) or not language.strip():
+        raise ConfigError(f"{label}: ocr.engine.language must be a non-empty string")
+
+    psm = engine_raw.get("psm", 7)
+    if not isinstance(psm, int) or isinstance(psm, bool):
+        raise ConfigError(f"{label}: ocr.engine.psm must be an integer")
+    if not 0 <= psm <= 13:
+        raise ConfigError(f"{label}: ocr.engine.psm must be between 0 and 13")
+
+    min_conf = engine_raw.get("min_confidence", 60.0)
+    if not _is_number(min_conf):
+        raise ConfigError(f"{label}: ocr.engine.min_confidence must be a number")
+    if not 0.0 <= min_conf <= 100.0:
+        raise ConfigError(
+            f"{label}: ocr.engine.min_confidence must be between 0.0 and 100.0"
+        )
+
+    engine = OcrEngine(
+        language=language,
+        psm=int(psm),
+        min_confidence=float(min_conf),
+    )
+
+    # Patterns
+    raw_patterns = data.get("patterns")
+    if raw_patterns is None:
+        raw_patterns = {}
+    if not isinstance(raw_patterns, dict):
+        raise ConfigError(f"{label}: ocr.patterns must be a mapping")
+    patterns: list[OcrPattern] = []
+    for key, val in cast(dict[str, object], raw_patterns).items():
+        if not isinstance(key, str):
+            raise ConfigError(f"{label}: ocr.patterns keys must be strings")
+        # Validate regex compiles
+        import re
+
+        try:
+            re.compile(key)
+        except re.error as exc:
+            raise ConfigError(
+                f"{label}: ocr.patterns key '{key}' is not a valid regex: {exc}"
+            ) from exc
+        if val is not None and not isinstance(val, int):
+            raise ConfigError(
+                f"{label}: ocr.patterns['{key}'] must be an integer or null"
+            )
+        patterns.append(
+            OcrPattern(regex=key, split_index=val if isinstance(val, int) else None)
+        )
+
+    poll_interval = data.get("poll_interval_frames", 3)
+    if not isinstance(poll_interval, int) or isinstance(poll_interval, bool):
+        raise ConfigError(
+            f"{label}: ocr.poll_interval_frames must be an integer"
+        )
+    if poll_interval < 1:
+        raise ConfigError(
+            f"{label}: ocr.poll_interval_frames must be at least 1"
+        )
+
+    return OcrConfig(
+        roi=roi,
+        engine=engine,
+        patterns=tuple(patterns),
+        poll_interval_frames=int(poll_interval),
     )

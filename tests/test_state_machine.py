@@ -461,3 +461,88 @@ class TestFeedFrameIntegration:
             (2, "Transition 2"),
             (3, "Transition 3"),
         ]
+
+
+# ---------------------------------------------------------------------------
+# OCR resync
+# ---------------------------------------------------------------------------
+
+
+def _make_machine_with_ocr(start_index: int = 0) -> TransitionDetector:
+    """Build a 5-split machine with OCR config."""
+    cfg = Config(
+        capture=Capture(fps=60, stream_url="udp://127.0.0.1:9733", width=1920, height=1080),
+        roi=DEFAULT_ROI,
+        detection=Detection(required_frames=3, reset_threshold=0.5),
+        colors={"black": Color(name="black", rgb=(0, 0, 0), tolerance=15)},
+        splits=tuple(
+            Split(id=i, name=f"Split {i}", color="black", threshold=0.9)
+            for i in range(1, 6)
+        ),
+        livesplit=LiveSplit(host="127.0.0.1", port=16834),
+        ocr=None,
+    )
+    machine = TransitionDetector(cfg)
+    machine._index = start_index
+    return machine
+
+
+class TestOcrResync:
+    def test_resync_in_normal(self) -> None:
+        machine = _make_machine_with_ocr(start_index=0)
+        assert machine.current_split_index == 0
+        machine._resync_index(3)
+        assert machine.current_split_index == 3
+        assert machine._streak == 0
+
+    def test_resync_blocked_in_transition(self) -> None:
+        machine = _make_machine_with_ocr(start_index=1)
+        machine._state = State.TRANSITION
+        machine._resync_index(3)
+        assert machine.current_split_index == 1
+
+    def test_resync_blocked_in_waiting_for_reset(self) -> None:
+        machine = _make_machine_with_ocr(start_index=1)
+        machine._state = State.WAITING_FOR_RESET
+        machine._resync_index(3)
+        assert machine.current_split_index == 1
+
+    def test_resync_blocked_in_done(self) -> None:
+        machine = _make_machine_with_ocr(start_index=5)
+        machine._state = State.DONE
+        machine._resync_index(3)
+        assert machine.current_split_index == 5
+
+    def test_resync_ignores_same_index(self) -> None:
+        machine = _make_machine_with_ocr(start_index=2)
+        machine._streak = 5
+        machine._resync_index(2)
+        assert machine._streak == 5
+
+    def test_resync_ignores_out_of_range(self) -> None:
+        machine = _make_machine_with_ocr(start_index=0)
+        machine._resync_index(99)
+        assert machine.current_split_index == 0
+        machine._resync_index(-1)
+        assert machine.current_split_index == 0
+
+    def test_resync_resets_streak(self) -> None:
+        machine = _make_machine_with_ocr(start_index=0)
+        machine._streak = 10
+        machine._resync_index(2)
+        assert machine._streak == 0
+
+    def test_check_ocr_resync_without_ocr_config(self) -> None:
+        cfg = Config(
+            capture=Capture(fps=60, stream_url="udp://127.0.0.1:9733", width=1920, height=1080),
+            roi=DEFAULT_ROI,
+            detection=Detection(required_frames=3, reset_threshold=0.5),
+            colors={"black": Color(name="black", rgb=(0, 0, 0), tolerance=15)},
+            splits=(Split(id=1, name="S", color="black", threshold=0.9),),
+            livesplit=LiveSplit(host="127.0.0.1", port=16834),
+            ocr=None,
+        )
+        machine = TransitionDetector(cfg)
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        machine.check_ocr_resync(frame, 0)
+        assert machine.current_split_index == 0

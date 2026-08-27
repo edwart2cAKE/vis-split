@@ -6,6 +6,7 @@ from autosplitter.detection.color_detector import (
     build_detector,
     roi_bounds,
 )
+from autosplitter.detection.ocr_detector import OcrDetector, OcrResult, OcrWorker
 from autosplitter.detection.state_machine import (
     SplitEvent,
     StartEvent,
@@ -16,6 +17,9 @@ from autosplitter.detection.state_machine import (
 __all__ = [
     "ColorDetector",
     "DetectionResult",
+    "OcrDetector",
+    "OcrResult",
+    "OcrWorker",
     "SplitEvent",
     "StartEvent",
     "State",

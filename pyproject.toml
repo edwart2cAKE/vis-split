@@ -9,6 +9,9 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+ocr = ["tesserocr>=2.7"]
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.39",

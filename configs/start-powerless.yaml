@@ -27,6 +27,21 @@ roi:
   width: 0.30
   height: 0.30
 
+ocr:
+  # Level number is a white digit in the top-left corner of the gameplay area.
+  # ROI: top-left 10%x10% of the frame.
+  roi:
+    x: 0.0
+    y: 0.0
+    width: 0.10
+    height: 0.10
+  engine:
+    psm: 10    # single character
+    min_confidence: 60.0
+  patterns:
+    "(\\d+)": null   # extract digit as 1-based split id
+  poll_interval_frames: 3
+
 detection:
   # Debounce is frame-counted: 3 frames at 60 fps ~= 50 ms of flicker immunity.
   required_frames: 3

@@ -25,6 +25,7 @@ The OBS sidecar runs alongside Streaming; nothing here touches the stream.
 
 from __future__ import annotations
 
+import select
 import shutil
 import subprocess
 import time
@@ -126,8 +127,10 @@ class MpegTsFrameSource:
         self._is_live: bool = location.startswith(("udp://", "tcp://"))
         self._ended: bool = False
         self._backoff: float = 0.0
+        self._next_spawn: float = 0.0
         self._proc: subprocess.Popen[bytes] | None = None
         self._reader: RawPipeReader | None = None
+        self._logged_dims: bool = False
 
     @property
     def exhausted(self) -> bool:
@@ -140,12 +143,30 @@ class MpegTsFrameSource:
         if (self._proc is None or self._reader is None) and not self._spawn():
             return None
         reader = self._reader
-        if reader is None:
+        proc = self._proc
+        if reader is None or proc is None:
             return None
+        # Guard against a hung ffmpeg: if the pipe has no data within the
+        # timeout, treat it as a stall and reconnect.  Only for live sources
+        # (files legitimately block until EOF).
+        if self._is_live and proc.stdout is not None:
+            try:
+                fd = proc.stdout.fileno()
+                readable, _, _ = select.select([fd], [], [], 2.0)
+                if not readable:
+                    self._teardown()
+                    return None
+            except (OSError, ValueError):
+                self._teardown()
+                return None
         frame = reader.read_frame()
         if frame is None:
             self._teardown()
             return None
+        if not self._logged_dims:
+            self._logged_dims = True
+            h, w = frame.shape[:2]
+            print(f"Decoded: {w}x{h} BGR")
         self._backoff = 0.0
         return frame
 
@@ -153,9 +174,9 @@ class MpegTsFrameSource:
         self._teardown()
 
     def _spawn(self) -> bool:
-        if self._is_live and self._backoff > 0.0:
-            time.sleep(self._backoff)
-        self._backoff = min(max(self._backoff * 2.0, 0.5), 2.0)
+        now = time.monotonic()
+        if self._is_live and now < self._next_spawn:
+            return False
 
         cmd = [
             self._bin,
@@ -197,13 +218,17 @@ class MpegTsFrameSource:
             "-",
         ]
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError:
+            self._backoff = min(max(self._backoff * 2.0, 0.5), 2.0)
+            self._next_spawn = now + self._backoff
             return False
 
         stream = proc.stdout
         if stream is None:
             proc.kill()
+            self._backoff = min(max(self._backoff * 2.0, 0.5), 2.0)
+            self._next_spawn = now + self._backoff
             return False
         self._proc = proc
         # Popen types stdout loosely as IO[Any], which does not structurally
@@ -211,6 +236,10 @@ class MpegTsFrameSource:
         self._reader = RawPipeReader(
             self._width, self._height, cast(ByteStream, cast(object, stream))
         )
+        # Prepare backoff for the next reconnect attempt (only used if this
+        # process dies).  Reset in read() on successful frame.
+        if self._is_live:
+            self._backoff = min(max(self._backoff * 2.0, 0.5), 2.0)
         return True
 
     def _teardown(self) -> None:
@@ -230,4 +259,19 @@ class MpegTsFrameSource:
             proc.kill()
             proc.wait()
         if proc.stdout is not None:
-            proc.stdout.close()
+            try:
+                proc.stdout.close()
+            except (OSError, ValueError):
+                pass
+        if proc.stderr is not None:
+            try:
+                err = proc.stderr.read(4096).decode("utf-8", errors="replace").strip()
+                if err:
+                    first_line = err.split("\n", 1)[0]
+                    print(f"\nffmpeg: {first_line}")
+            except (OSError, ValueError):
+                pass
+            try:
+                proc.stderr.close()
+            except (OSError, ValueError):
+                pass
