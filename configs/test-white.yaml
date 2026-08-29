@@ -1,17 +1,21 @@
 # Test config: splits on white screen flashes (4 sections).
 # Use with a synthetic test source or any game with white transitions.
+# For debugging: use a local file or synthetic ffmpeg input instead of UDP.
 
 capture:
   fps: 60
-  stream_url: "udp://127.0.0.1:9733?pkt_size=1316"
+  # Use a local file for debugging (no OBS needed):
+  # stream_url: "recordings/start-powerless_20260825_224429_0001.mp4"
+  # Use synthetic test pattern (requires ffmpeg installed):
+  stream_url: "udp://127.0.0.1:9733?pkt_size=1316&loglevel=error"
   width: 1920
   height: 1080
 
 roi:
-  x: 0.25
-  y: 0.25
-  width: 0.25
-  height: 0.25
+  x: 0.0
+  y: 0.0
+  width: 0.2
+  height: 0.2
 
 detection:
   required_frames: 3
@@ -34,22 +38,22 @@ start_transition:
 
 splits:
   - id: 1
-    name: "Section 1"
+    name: "split 1"
     color: white
     threshold: 0.90
 
   - id: 2
-    name: "Section 2"
+    name: "split 2"
     color: white
     threshold: 0.90
 
   - id: 3
-    name: "Section 3"
+    name: "split 3"
     color: white
     threshold: 0.90
 
   - id: 4
-    name: "Section 4 (End)"
+    name: "split 4"
     color: white
     threshold: 0.90
 
@@ -59,7 +63,8 @@ livesplit:
   timeout_seconds: 0.25
   reconnect_seconds: 5.0
 
-record:
-  path_template: "recordings/test_{datetime}_{attempt:04d}.mkv"
-  convert_to: "mp4"
-  post_run_seconds: 10.0
+# Disabled for debugging - uncomment to enable recording
+# record:
+#   path_template: "recordings/testing/white_test_{datetime}_{attempt:04d}.mkv"
+#   convert_to: "mp4"
+#   post_run_seconds: 10.0

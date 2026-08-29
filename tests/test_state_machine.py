@@ -546,3 +546,36 @@ class TestOcrResync:
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
         machine.check_ocr_resync(frame, 0)
         assert machine.current_split_index == 0
+
+    def test_ocr_text_none_initially(self) -> None:
+        machine = _make_machine_with_ocr()
+        assert machine.ocr_text is None
+
+    def test_ocr_text_none_without_ocr(self) -> None:
+        cfg = Config(
+            capture=Capture(fps=60, stream_url="udp://127.0.0.1:9733", width=1920, height=1080),
+            roi=DEFAULT_ROI,
+            detection=Detection(required_frames=3, reset_threshold=0.5),
+            colors={"black": Color(name="black", rgb=(0, 0, 0), tolerance=15)},
+            splits=(Split(id=1, name="S", color="black", threshold=0.9),),
+            livesplit=LiveSplit(host="127.0.0.1", port=16834),
+            ocr=None,
+        )
+        machine = TransitionDetector(cfg)
+        assert machine.ocr_text is None
+
+    def test_ocr_text_updates_from_result(self) -> None:
+        from autosplitter.detection.ocr_detector import OcrResult
+
+        machine = _make_machine_with_ocr()
+        result = OcrResult(text="7", confidence=92.0, split_index=6, frame_number=0)
+        machine._ocr_latest = result
+        assert machine.ocr_text == "7"
+
+    def test_ocr_text_empty_text_returns_none(self) -> None:
+        from autosplitter.detection.ocr_detector import OcrResult
+
+        machine = _make_machine_with_ocr()
+        result = OcrResult(text="", confidence=50.0, split_index=None, frame_number=0)
+        machine._ocr_latest = result
+        assert machine.ocr_text is None

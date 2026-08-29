@@ -42,7 +42,7 @@ from autosplitter.detection.color_detector import (
     DetectionResult,
     build_detector,
 )
-from autosplitter.detection.ocr_detector import OcrDetector, OcrWorker
+from autosplitter.detection.ocr_detector import OcrDetector, OcrResult, OcrWorker
 
 
 class State(Enum):
@@ -97,6 +97,7 @@ class TransitionDetector:
 
         # OCR worker (optional — augments color detection by re-syncing index)
         self._ocr_worker: OcrWorker | None = None
+        self._ocr_latest: OcrResult | None = None
         if config.ocr is not None:
             ocr_detector = OcrDetector(
                 config.ocr.roi, config.ocr.engine, config.ocr.patterns
@@ -172,6 +173,13 @@ class TransitionDetector:
         else:
             self._state = State.NORMAL
 
+    @property
+    def ocr_text(self) -> str | None:
+        """Latest raw OCR text (or None if OCR not configured / no reading yet)."""
+        if self._ocr_latest is None:
+            return None
+        return self._ocr_latest.text or None
+
     def check_ocr_resync(self, frame: np.ndarray, frame_idx: int) -> None:
         """Submit frame to OCR worker and re-sync index if needed.
 
@@ -181,7 +189,10 @@ class TransitionDetector:
             return
         self._ocr_worker.submit_frame(frame, frame_idx)
         result = self._ocr_worker.poll_result()
-        if result is None or result.split_index is None:
+        if result is None:
+            return
+        self._ocr_latest = result
+        if result.split_index is None:
             return
         if result.frame_number != frame_idx:
             return

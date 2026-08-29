@@ -8,6 +8,7 @@ Phase 4: live capture over MPEG-TS (--live [SOURCE]).
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -304,7 +305,9 @@ def _run_live(
     # agree again so a later drift re-warns instead of staying silent.
     sync_warned: tuple[str, str] | None = None
 
-    # Overlay setup
+    # Overlay setup — force xcb on pure Wayland (OpenCV Qt backend has no Wayland plugin).
+    if "QT_QPA_PLATFORM" not in os.environ and overlay_enabled:
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
     overlay_window_name = "autosplitter"
     overlay_enabled_actual = False
     overlay_throttle = max(1, cfg.capture.fps // 10)
@@ -319,6 +322,15 @@ def _run_live(
     # bursts around startup cannot skew the measurement.
     steady_base_index: int | None = None
     steady_base_time: float = 0.0
+
+    has_ocr = cfg.ocr is not None
+    if loop_enabled or max_frames is not None or has_ocr:
+        hdr = f"  {'frame':>6}  {'fps':>5}  {'match':>7}  {'state':<17}"
+        if has_ocr:
+            hdr += f"  {'ocr':>6}"
+        if livesplit_enabled:
+            hdr += f"  {'ls':>5}"
+        print(hdr)
 
     try:
         while max_frames is None or frame_index < max_frames:
@@ -496,6 +508,10 @@ def _run_live(
                 f"\r#{frame_index:<6} {fps:5.1f} fps  match {ratio * 100:6.2f}%"
                 + f"  {machine.state.name:<17}"
             )
+            if has_ocr:
+                ocr_txt = machine.ocr_text
+                ocr_col = f"ocr={ocr_txt}" if ocr_txt is not None else ""
+                line += f"  {ocr_col:>6}"
             if loop_enabled and machine.finished:
                 line += f"  quiet {quiet_frames}/{quiet_needed}"
             if livesplit_enabled and ls_phase is not None:

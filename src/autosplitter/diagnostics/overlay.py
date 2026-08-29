@@ -123,7 +123,7 @@ def annotate(
 
     # ROI rectangle
     x, y, w, h = ocfg.roi_px
-    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
 
     # HUD lines
     split_name, threshold_pct, color_name = _get_active_split_info(machine, cfg)
