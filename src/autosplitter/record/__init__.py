@@ -26,6 +26,9 @@ def resolve_path(template: str, config_path: str) -> str:
     The attempt counter counts ``.mkv`` and ``.mp4`` files in the
     recordings directory that match the resolved pattern (with {attempt}
     replaced by a numeric wildcard).  It never resets.
+
+    If the template contains {datetime}, the attempt counter is global
+    per game (matches any datetime in the filename).
     """
     now = datetime.now(tz=UTC)
     game = Path(config_path).stem
@@ -39,21 +42,27 @@ def resolve_path(template: str, config_path: str) -> str:
 
     # Resolve {attempt}: count existing files in the recordings directory
     # that match the pattern (with {attempt} or {attempt:Nd} still literal).
-    attempt = _next_attempt(partial)
+    attempt = _next_attempt(partial, template)
     # Handle both {attempt} and {attempt:Nd} format specs.
     partial = re.sub(r"\{attempt(?::(\d+)d)?\}", lambda m: f"{attempt:0{int(m.group(1)) if m.group(1) else 4}d}", partial)
 
     return partial
 
 
-def _next_attempt(resolved_with_attempt_literal: str) -> int:
+def _next_attempt(resolved_with_attempt_literal: str, template: str) -> int:
     """Return the next attempt number (1-based) for the given path.
 
     ``resolved_with_attempt_literal`` has all variables resolved except
     {attempt} (or {attempt:Nd}), which is still literal.
 
+    ``template`` is the original template (with {datetime} still literal)
+    used to determine if the attempt counter should be global per game.
+
     Counts existing ``.mkv`` and ``.mp4`` files in the parent directory
     whose stem matches the pattern with {attempt} replaced by digits.
+
+    If the template contains {datetime}, the attempt counter is global
+    per game (matches any datetime in the filename).
     """
     path = Path(resolved_with_attempt_literal)
     directory = path.parent
@@ -72,6 +81,17 @@ def _next_attempt(resolved_with_attempt_literal: str) -> int:
     regex_stem = escaped.replace(
         re.escape(attempt_match.group()), r"(\d+)"
     )
+
+    # If the template contains {datetime}, the datetime portion varies per run.
+    # Make the regex match any datetime pattern (YYYYMMDD_HHMMSS) so the
+    # attempt counter increments globally per game, not per datetime.
+    if "{datetime}" in template:
+        # The datetime in the resolved path is already expanded, so we need to
+        # find where it is in the escaped stem and replace it with a wildcard.
+        actual_datetime = re.search(r"\d{8}_\d{6}", resolved_with_attempt_literal)
+        if actual_datetime:
+            escaped_datetime = re.escape(actual_datetime.group())
+            regex_stem = regex_stem.replace(escaped_datetime, r"\d{8}_\d{6}")
 
     count = 0
     for entry in directory.iterdir():

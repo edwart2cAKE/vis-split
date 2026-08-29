@@ -209,7 +209,10 @@ class MpegTsFrameSource:
             "passthrough",
         ]
         if self._record_path is not None:
-            cmd += ["-c:v", "copy", self._record_path]
+            # Use -y to overwrite any empty file from a failed connection attempt.
+            # The path is resolved once at construction, so reconnects append to
+            # the same file (overwriting only empty files from failed connects).
+            cmd += ["-y", "-c:v", "copy", self._record_path]
         cmd += [
             "-f",
             "rawvideo",

@@ -715,6 +715,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Resolve record_path: CLI --record wins; otherwise use config template.
+    # Resolve once at startup so reconnects use the same file (with -y to overwrite
+    # empty files from failed connection attempts).
     if record_path is None and cfg.record is not None:
         record_path = resolve_path(cfg.record.path_template, config_path)
     record_cfg = cfg.record if record_path is not None else None
