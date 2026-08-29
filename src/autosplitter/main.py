@@ -191,6 +191,20 @@ def _convert_recording(record_path: str, convert_to: str) -> None:
         print(f"WARNING: conversion failed: {exc}")
 
 
+def _reload_config(
+    path: Path, machine: TransitionDetector
+) -> Config | None:
+    """Reload config from file and apply hot-swappable changes to machine."""
+    try:
+        new_cfg = load(path)
+        machine.reload_config(new_cfg)
+        print("\nConfig reloaded (colors/thresholds/ROI/detection)")
+        return new_cfg
+    except ConfigError as e:
+        print(f"\nConfig reload failed: {e}")
+        return None
+
+
 def _run_live(
     cfg: Config,
     source_override: str | None,
@@ -203,6 +217,8 @@ def _run_live(
     overlay_enabled: bool = False,
     record_path: str | None = None,
     record_cfg: Record | None = None,
+    config_path: Path | None = None,
+    config_poll_interval: float = 1.0,
 ) -> int:
     """Decode the sidecar stream and feed frames through the state machine,
     printing a rolling status line (Phase 4 demo).
@@ -332,8 +348,28 @@ def _run_live(
             hdr += f"  {'ls':>5}"
         print(hdr)
 
+    # Config reload polling (only if config_path provided)
+    config_poll_interval = config_poll_interval if config_path is not None else 0.0
+    last_mtime = config_path.stat().st_mtime if config_path is not None else 0.0
+    last_config_check = 0.0
+
     try:
         while max_frames is None or frame_index < max_frames:
+            now = time.monotonic()
+
+            # Check for config file changes
+            if config_path is not None and now - last_config_check >= config_poll_interval:
+                last_config_check = now
+                try:
+                    mtime = config_path.stat().st_mtime
+                    if mtime != last_mtime:
+                        last_mtime = mtime
+                        new_cfg = _reload_config(config_path, machine)
+                        if new_cfg is not None:
+                            cfg = new_cfg
+                except OSError:
+                    pass  # file temporarily unavailable
+
             frame = source.read()
             if frame is None:
                 if source.exhausted:
@@ -343,8 +379,6 @@ def _run_live(
                     print("\ncapture unavailable, reconnecting...", flush=True)
                     unavailable = True
                 continue
-
-            now = time.monotonic()
 
             if machine.finished and not loop_enabled:
                 if _done_time is None:
@@ -638,6 +672,12 @@ def main(argv: list[str] | None = None) -> int:
         help="with --live: record a codec-copy .mkv to PATH while detecting (single ffmpeg, no extra UDP consumer)",
     )
     parser.add_argument(
+        "--config-poll-interval",
+        type=float,
+        default=1.0,
+        help="with --live: config file poll interval in seconds (default: 1.0)",
+    )
+    parser.add_argument(
         "--probe",
         metavar="IMAGE",
         help="load an image, crop to ROI from config, and print average RGB in the ROI (for color tuning)",
@@ -658,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
     loop_enabled = cast(bool, args.loop)
     overlay_enabled = cast(bool, args.overlay)
     record_path = cast("str | None", args.record)
+    config_poll_interval = cast(float, args.config_poll_interval)
 
     for name, value in (("width", width_override), ("height", height_override), ("snap", snap_frames)):
         if value is not None and value <= 0:
@@ -700,6 +741,8 @@ def main(argv: list[str] | None = None) -> int:
                 overlay_enabled,
                 record_path,
                 record_cfg,
+                Path(config_path),
+                config_poll_interval,
             )
             or exit_code
         )

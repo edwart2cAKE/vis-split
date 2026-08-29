@@ -23,9 +23,9 @@ roi:
   #      x2: 0.75
   #      y2: 0.75
   x: 0.15
-  y: 0.30
-  width: 0.30
-  height: 0.30
+  y: 0.15
+  width: 0.40
+  height: 0.50
 
 ocr:
   # Level number is a white digit in the top-left corner of the gameplay area.
@@ -165,12 +165,12 @@ livesplit:
   timeout_seconds: 0.25
   reconnect_seconds: 5.0
 
-# record:
-#   # Path template for recordings. Variables: {game}, {date}, {time},
-#   # {datetime}, {attempt} (auto-incremented, zero-padded to 4 digits).
-#   path_template: "recordings/{game}_{datetime}_{attempt:04d}.mkv"
-#   # Convert .mkv to this format after the run (best-effort, .mkv kept).
-#   convert_to: "mp4"
-#   # Keep recording for this many seconds after the last split fires
-#   # (captures victory screen / final time display).
-#   post_run_seconds: 30.0
+record:
+  # Path template for recordings. Variables: {game}, {date}, {time},
+  # {datetime}, {attempt} (auto-incremented, zero-padded to 4 digits).
+  path_template: "recordings/{game}_{datetime}_{attempt:04d}.mkv"
+  # Convert .mkv to this format after the run (best-effort, .mkv kept).
+  convert_to: "mp4"
+  # Keep recording for this many seconds after the last split fires
+  # (captures victory screen / final time display).
+  post_run_seconds: 30.0

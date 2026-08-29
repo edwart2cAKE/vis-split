@@ -214,6 +214,26 @@ class TransitionDetector:
         if self._ocr_worker is not None:
             self._ocr_worker.close()
 
+    def reload_config(self, new_cfg: Config) -> None:
+        """Hot-swap color/threshold/ROI/detection params without restart.
+
+        Rebuilds color detectors and start detector. Updates config reference
+        so detection params (required_frames, reset_threshold, etc.) are read
+        from the new config on the next frame.
+
+        Does NOT handle: adding/removing splits, adding/removing start_transition,
+        OCR config changes, or capture/livesplit/record changes.
+        """
+        # Rebuild color detectors for all splits
+        self._detectors = [build_detector(new_cfg, s) for s in new_cfg.splits]
+
+        # Rebuild start detector if it exists (modify only, not add/remove)
+        if new_cfg.start_transition is not None and self._start_detector is not None:
+            self._start_detector = build_detector(new_cfg, new_cfg.start_transition)
+
+        # Update config reference — detection params read per-frame from here
+        self._config = new_cfg
+
     def feed_frame(self, frame: np.ndarray) -> SplitEvent | StartEvent | None:
         """Detect the active split's color on this frame, then advance."""
         if self._state is State.WAITING_FOR_START:
