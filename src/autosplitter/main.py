@@ -682,6 +682,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="IMAGE",
         help="load an image, crop to ROI from config, and print average RGB in the ROI (for color tuning)",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="launch the PySide6 GUI instead of the CLI live loop",
+    )
     args = parser.parse_args(argv)
 
     # argparse.Namespace attributes are untyped; validate/cast once, here.
@@ -699,10 +704,15 @@ def main(argv: list[str] | None = None) -> int:
     overlay_enabled = cast(bool, args.overlay)
     record_path = cast("str | None", args.record)
     config_poll_interval = cast(float, args.config_poll_interval)
+    gui_enabled = cast(bool, args.gui)
 
     for name, value in (("width", width_override), ("height", height_override), ("snap", snap_frames)):
         if value is not None and value <= 0:
             parser.error(f"--{name} must be a positive integer")
+
+    if gui_enabled:
+        from .gui import launch_gui
+        return launch_gui(config_path)
 
     if not check_enabled and not detect_paths and live_arg is None and probe_path is None:
         parser.print_help()

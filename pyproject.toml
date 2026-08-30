@@ -11,6 +11,9 @@ dependencies = [
 
 [project.optional-dependencies]
 ocr = ["tesserocr>=2.7"]
+gui = [
+    "pyside6>=6.11.2",
+]
 
 [dependency-groups]
 dev = [

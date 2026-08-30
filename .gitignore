@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+src/autosplitter/capture/__pycache__/frame_source.cpython-314.pyc
 
 # Environments & tooling caches
 .venv/
