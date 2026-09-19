@@ -467,12 +467,13 @@ def _run_live(
                             local_next = (
                                 local_split.name if local_split is not None else ""
                             )
-                            if ls_name != local_next:
+                            # Partial match: check if autosplitter name is contained in LiveSplit name
+                            if local_next and local_next not in ls_name:
                                 if sync_warned != (local_next, ls_name):
                                     sync_warned = (local_next, ls_name)
                                     print(
                                         "\nWARN: LiveSplit desync: detector expects"
-                                        f' "{local_next or "(done)"}"'
+                                        f' "{local_next}"'
                                         f' but LiveSplit is at "{ls_name}"'
                                     )
                             else:
