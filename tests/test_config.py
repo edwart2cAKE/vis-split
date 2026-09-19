@@ -865,6 +865,15 @@ class TestCaptureAndLivesplit:
             height=1080,
         )
 
+    @pytest.mark.parametrize(
+        "url", ["srt://127.0.0.1:9733?mode=listener", "tcp://127.0.0.1:9733"]
+    )
+    def test_live_schemes_accepted(self, tmp_path: Path, url: str) -> None:
+        block = VALID_CAPTURE_BLOCK.replace("udp://127.0.0.1:9733", url)
+        path = capture_config(tmp_path, block)
+
+        assert load(path).capture.stream_url == url
+
     def test_bad_scheme_rejected(self, tmp_path: Path) -> None:
         block = VALID_CAPTURE_BLOCK.replace(
             'udp://127.0.0.1:9733', 'http://example.com'
@@ -873,7 +882,7 @@ class TestCaptureAndLivesplit:
 
         with pytest.raises(
             ConfigError,
-            match=r"capture\.stream_url must start with udp:// or tcp://",
+            match=r"capture\.stream_url must start with udp://, tcp:// or srt://",
         ):
             load(path)
 

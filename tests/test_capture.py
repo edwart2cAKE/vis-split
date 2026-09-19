@@ -208,6 +208,42 @@ class TestMpegTsFrameSource:
 
         assert elapsed < 0.5
 
+    @pytest.mark.parametrize("scheme", ["udp", "tcp", "srt"])
+    def test_network_schemes_are_live(
+        self, monkeypatch: pytest.MonkeyPatch, scheme: str
+    ) -> None:
+        """Network URLs reconnect with backoff instead of ending after EOF."""
+        spawns: list[int] = []
+
+        def fake_popen(_cmd: list[str], **_kwargs: object) -> object:
+            spawns.append(1)
+            raise OSError("no process")
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        source = MpegTsFrameSource(f"{scheme}://127.0.0.1:9733", WIDTH, HEIGHT)
+
+        assert source.read() is None
+        assert source.read() is None
+        assert not source.exhausted
+        assert len(spawns) == 1
+
+    def test_file_location_is_not_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A file location has no reconnect backoff: every read retries the spawn."""
+        spawns: list[int] = []
+
+        def fake_popen(_cmd: list[str], **_kwargs: object) -> object:
+            spawns.append(1)
+            raise OSError("no process")
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        source = MpegTsFrameSource("clip.ts", WIDTH, HEIGHT)
+
+        assert source.read() is None
+        assert source.read() is None
+        assert len(spawns) == 2
+
     def test_spawn_failure_sets_next_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """After a failed spawn, _next_spawn is set so no re-attempt is made immediately."""
         def fake_popen(cmd: list[str], **kwargs: object) -> object:
@@ -258,3 +294,78 @@ class TestMpegTsFrameSource:
         frame = source.read()
         assert frame is not None
         assert source._backoff == 0.0
+
+
+class TestStallWatchdog:
+    """The 2 s no-data watchdog must not kill an SRT listener awaiting its peer."""
+
+    @staticmethod
+    def _silent_source(
+        monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> tuple[MpegTsFrameSource, list[str]]:
+        import select as select_mod
+
+        events: list[str] = []
+
+        class FakeStream:
+            def fileno(self) -> int:
+                return 5
+
+            def readinto(self, _b: memoryview, /) -> int:
+                return 0
+
+            def close(self) -> None:
+                return None
+
+        class FakeProc:
+            stdout: FakeStream = FakeStream()
+            stderr: object | None = None
+
+            def terminate(self) -> None:
+                events.append("terminate")
+
+            def wait(self, *_args: object, **_kwargs: object) -> int:
+                return 0
+
+            def kill(self) -> None:
+                events.append("kill")
+
+        def fake_select(
+            _rlist: object, _wlist: object, _xlist: object, _timeout: float = 0.0
+        ) -> tuple[list[int], list[int], list[int]]:
+            return ([], [], [])
+
+        def fake_popen(_cmd: list[str], **_kwargs: object) -> FakeProc:
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(select_mod, "select", fake_select)
+        return MpegTsFrameSource(url, WIDTH, HEIGHT), events
+
+    def test_srt_listener_survives_silence_before_first_frame(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source, events = self._silent_source(
+            monkeypatch, "srt://127.0.0.1:9733?mode=listener"
+        )
+
+        assert source.read() is None
+        assert source.read() is None
+
+        assert events == []
+
+    def test_udp_stall_still_tears_down(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        source, events = self._silent_source(monkeypatch, "udp://127.0.0.1:9733")
+
+        assert source.read() is None
+
+        assert events == ["terminate"]
+
+    def test_srt_caller_stall_still_tears_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source, events = self._silent_source(monkeypatch, "srt://127.0.0.1:9733")
+
+        assert source.read() is None
+
+        assert events == ["terminate"]

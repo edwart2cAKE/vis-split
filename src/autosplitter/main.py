@@ -227,7 +227,7 @@ def _run_live(
     and the run ends — pairs with a local ``testsrc`` sender to measure
     end-to-end latency against its burned-in clock.
 
-    For live (udp/tcp) sources, once the rolling fps window is full it is
+    For live (udp/tcp/srt) sources, once the rolling fps window is full it is
     compared against ``capture.fps``; a sustained deviation >15% prints a
     one-time HINT (debounce is frame-counted, so a stream/config rate
     mismatch silently changes split timing).
@@ -254,7 +254,7 @@ def _run_live(
     url = source_override or cfg.capture.stream_url
     width = width_override or cfg.capture.width
     height = height_override or cfg.capture.height
-    live_stream = url.startswith(("udp://", "tcp://"))
+    live_stream = url.startswith(("udp://", "tcp://", "srt://"))
     try:
         source = MpegTsFrameSource(url, width, height, record_path=record_path)
     except RuntimeError as exc:

@@ -3,7 +3,7 @@
 Pipeline:
 
     OBS sidecar output (Recording -> Custom Output (FFmpeg), mpegts)
-      -> udp:// or tcp:// localhost URL
+      -> udp://, tcp:// or srt:// localhost URL
       -> ffmpeg subprocess decodes to raw BGR24 on stdout
       -> RawPipeReader assembles fixed-size (H, W, 3) uint8 frames
 
@@ -93,9 +93,12 @@ class MpegTsFrameSource:
 
     ``location`` is anything ffmpeg accepts as -i input:
 
-    - ``udp://`` / ``tcp://`` URLs are treated as live: if the decoder exits
+    - ``udp://`` / ``tcp://`` / ``srt://`` URLs are treated as live: if the decoder exits
       or the stream ends, it is respawned with exponential backoff (0.5 s
       doubling to a 2 s cap) until :meth:`close`.
+    - An ``srt://...mode=listener`` URL makes ffmpeg the listener; it waits
+      indefinitely for the sender to connect (no stall teardown before the
+      first frame).
     - Anything else (e.g. a file path) plays once; after EOF, :meth:`read`
       keeps returning None instead of replaying in a loop.
 
@@ -133,7 +136,13 @@ class MpegTsFrameSource:
         self._width: int = width
         self._height: int = height
         self._record_path: str | None = record_path
-        self._is_live: bool = location.startswith(("udp://", "tcp://"))
+        self._is_live: bool = location.startswith(("udp://", "tcp://", "srt://"))
+        # An SRT listener waits for the sender (OBS) to connect, so silence
+        # before its first frame is normal and must not trip the stall watchdog.
+        self._is_listener: bool = location.startswith("srt://") and (
+            "mode=listener" in location
+        )
+        self._got_frame: bool = False
         self._ended: bool = False
         self._backoff: float = 0.0
         self._next_spawn: float = 0.0
@@ -157,13 +166,15 @@ class MpegTsFrameSource:
             return None
         # Guard against a hung ffmpeg: if the pipe has no data within the
         # timeout, treat it as a stall and reconnect.  Only for live sources
-        # (files legitimately block until EOF).
+        # (files legitimately block until EOF).  A listener that has not yet
+        # received its first frame is just waiting for the sender: keep it.
         if self._is_live and proc.stdout is not None:
             try:
                 fd = proc.stdout.fileno()
                 readable, _, _ = select.select([fd], [], [], 2.0)
                 if not readable:
-                    self._teardown()
+                    if not (self._is_listener and not self._got_frame):
+                        self._teardown()
                     return None
             except (OSError, ValueError):
                 self._teardown()
@@ -172,6 +183,7 @@ class MpegTsFrameSource:
         if frame is None:
             self._teardown()
             return None
+        self._got_frame = True
         if not self._logged_dims:
             self._logged_dims = True
             h, w = frame.shape[:2]
@@ -240,6 +252,7 @@ class MpegTsFrameSource:
             self._next_spawn = now + self._backoff
             return False
 
+        self._got_frame = False
         stream = proc.stdout
         if stream is None:
             proc.kill()

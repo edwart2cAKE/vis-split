@@ -245,9 +245,9 @@ def _parse_capture(value: object, label: str) -> Capture:
     stream_url = data.get("stream_url")
     if not isinstance(stream_url, str) or not stream_url.strip():
         raise ConfigError(f"{label}: capture.stream_url must be a non-empty string")
-    if not stream_url.startswith(("udp://", "tcp://")):
+    if not stream_url.startswith(("udp://", "tcp://", "srt://")):
         raise ConfigError(
-            f"{label}: capture.stream_url must start with udp:// or tcp://"
+            f"{label}: capture.stream_url must start with udp://, tcp:// or srt://"
         )
 
     width = data.get("width")
