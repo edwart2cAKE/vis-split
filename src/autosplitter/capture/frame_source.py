@@ -99,10 +99,19 @@ class MpegTsFrameSource:
     - Anything else (e.g. a file path) plays once; after EOF, :meth:`read`
       keeps returning None instead of replaying in a loop.
 
-    When ``record_path`` is provided, ffmpeg also writes a copy of the stream
-    to that file (codec copy, no re-encoding) while outputting raw frames to
-    the pipe.  This lets a single UDP consumer serve both detection and
-    recording — no second socket needed.
+    When ``record_path`` is provided, ffmpeg outputs TWO destinations:
+
+    1. **Recording**: codec copy (``-c:v copy``) at full source resolution
+       to the specified file. No re-encoding — quality is preserved.
+    2. **Detection**: scaled to ``width x height`` (``-vf scale=W:H``)
+       and output as raw BGR24 to stdout for the detection pipeline.
+
+    This lets a single UDP consumer serve both detection (at detection
+    resolution) and recording (at full source resolution) — no second
+    socket needed.
+
+    When ``record_path`` is NOT provided, ffmpeg outputs raw BGR24 at
+    source resolution to stdout for detection only.
 
     Raises RuntimeError at construction if the ffmpeg binary is missing.
     """
@@ -209,10 +218,14 @@ class MpegTsFrameSource:
             "passthrough",
         ]
         if self._record_path is not None:
+            # Output 1: codec-copy recording at full source resolution.
             # Use -y to overwrite any empty file from a failed connection attempt.
-            # The path is resolved once at construction, so reconnects append to
-            # the same file (overwriting only empty files from failed connects).
             cmd += ["-y", "-c:v", "copy", self._record_path]
+        # Output 2: raw BGR frames for detection.
+        # When recording, scale to detection resolution (width x height).
+        # When not recording, output at source resolution (no filter needed).
+        if self._record_path is not None:
+            cmd += ["-vf", f"scale={self._width}:{self._height}"]
         cmd += [
             "-f",
             "rawvideo",
