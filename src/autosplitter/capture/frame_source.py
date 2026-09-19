@@ -21,6 +21,13 @@ OBS-side setup (one time):
                                   of canvas size)
 
 The OBS sidecar runs alongside Streaming; nothing here touches the stream.
+
+Alternative (keeps OBS's Recording slot free for a full-quality archive): add
+the Branch Output filter to the game scene and stream a low-res H.264 feed to
+srt://127.0.0.1:9733 from its Streaming section. Run the splitter as the SRT
+listener: srt://127.0.0.1:9733?mode=listener&rcvlatency=20000 (ffmpeg's SRT
+latency options are in microseconds) and set the frame size to the filter's
+output resolution.
 """
 
 from __future__ import annotations

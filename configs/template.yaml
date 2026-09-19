@@ -10,6 +10,9 @@
 capture:
   fps: 60                          # OBS Common FPS Value (Settings → Video)
   stream_url: "udp://127.0.0.1:9733?pkt_size=1316"
+  # SRT alternative (OBS Branch Output filter, splitter as listener; start the
+  # splitter before enabling the filter; rcvlatency is in microseconds):
+  # stream_url: "srt://127.0.0.1:9733?mode=listener&rcvlatency=20000"
   width: 1920                      # Sidecar Output (scaled) Resolution width
   height: 1080                     # Sidecar Output (scaled) Resolution height
 

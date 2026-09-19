@@ -5,7 +5,7 @@ detects screen transitions by color signature, and fires splits to LiveSplit ove
 Runs natively on Linux/Wayland, independent of Wine/LiveSplit.
 
 ```
-OBS Studio ──(sidecar mpegts over UDP)──> ffmpeg subprocess ──> raw BGR frames
+OBS Studio ──(sidecar mpegts over UDP or SRT)──> ffmpeg subprocess ──> raw BGR frames
                                                                   │
                                                 color detector + state machine
                                                                   │
@@ -14,7 +14,7 @@ OBS Studio ──(sidecar mpegts over UDP)──> ffmpeg subprocess ──> raw 
 ```
 
 Status: Phases 1–5 implemented — config validation, color detection, transition state
-machine, MPEG-TS frame capture with `--live` demo, LiveSplit client, `--loop` rearm,
+machine, MPEG-TS frame capture (`udp://`, `tcp://` or `srt://`) with `--live` demo, LiveSplit client, `--loop` rearm,
 `--overlay` diagnostics window, `--probe` color picker.
 Design details: see `Project Overview — Roblox Visual.md`; dev rules: see `AGENTS.md`.
 
@@ -164,6 +164,49 @@ Recording before or after launching `--live`. Streaming is untouched.
 - OBS: click **Start Recording** (in addition to Start Streaming if desired)
 - Terminal: `uv run python -m autosplitter.main --config configs/start-powerless.yaml --live`
 
+### Alternative: separate low-res SRT feed (OBS Recording stays free)
+
+The Custom Output (FFmpeg) recipe above takes over OBS's Recording slot. To keep
+Recording for a normal full-quality archive and give the detector its own cheap feed
+instead, use the **Branch Output** plugin (OBS ≥ 30.1; on Arch it is in the AUR as
+`obs-branch-output`). It runs its own encoder in the same OBS instance and does
+not touch your stream or recording.
+
+> The AUR build can fail under current GCC with `-Wsfinae-incomplete` promoted to an
+> error. Adding `-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF` to the cmake call in the
+> PKGBUILD fixes it.
+
+1. Right-click your game **scene** → **Filters** → **+** → **Branch Output**.
+2. In the filter's **Streaming** section (not Recording, which only writes files) set
+   **Stream Count** to 1 and the server to `srt://127.0.0.1:9733`; leave the key empty.
+   Plugin outputs are RTMP/SRT only, which is why this path uses SRT and not UDP.
+3. Encoder: H.264 (NVENC is fine), **1500 kbps**, keyframe interval 1 s, resolution
+   `640×360` via the filter's custom resolution. Very low bitrates (100 kbps measured)
+   add ~230 ms of pacing delay; the small resolution is what saves CPU, not the bitrate.
+4. Toggle the filter with its eye icon or the *Enable/Disable '<filter>'* hotkeys
+   (Settings → Hotkeys). It runs independently of the Start Streaming/Recording buttons.
+
+Run the splitter as the SRT **listener** and start it *before* enabling the filter:
+
+```bash
+uv run python -m autosplitter.main --config configs/your-game.yaml \
+  --live "srt://127.0.0.1:9733?mode=listener&rcvlatency=20000" \
+  --width 640 --height 360 --livesplit --loop
+```
+
+- `--width/--height` must equal the filter's output size exactly (or set
+  `capture.width/height` in your config). A mismatch garbles frames silently; a fps
+  counter reading ~10–20× too high is the tell.
+- `rcvlatency` is in **microseconds**. `20000` (20 ms) instead of libsrt's ~120 ms default
+  cut about 110 ms of latency on loopback.
+- `capture.fps` must equal the filter's real stream rate; check with
+  `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=nw=1 "srt://127.0.0.1:9733?mode=listener"`
+  before enabling the filter.
+- Measured end to end on this setup: about 250 ms from screen to splitter (see
+  *Measuring end-to-end latency*).
+- If the splitter is started while the filter is already on, connection can take
+  >10 s (OBS retries slowly). Start the splitter first, or re-toggle the filter.
+
 ## Connecting LiveSplit
 
 The detector talks to LiveSplit's built-in TCP command server running under
@@ -286,11 +329,27 @@ detector chain (±1 s human-timing error). Healthy result: well under 1 s.
 If the chain measures clean but live splits still lag seconds behind, the
 delay originates in OBS's sidecar output path.
 
+That test bypasses OBS entirely. To include OBS (e.g. the SRT Branch Output feed),
+show a wall clock in the OBS scene and compare it to when the splitter saved the frame:
+
+1. Show a millisecond wall clock in a window OBS captures, for example:
+   ```bash
+   uv run python -c 'exec("import cv2,time,numpy as np\nimg=np.zeros((300,1100,3),np.uint8)\nwhile True:\n img[:]=0\n cv2.putText(img,format(time.time(),\".3f\"),(20,200),cv2.FONT_HERSHEY_SIMPLEX,4,(255,255,255),8)\n cv2.imshow(\"clock\",img)\n if cv2.waitKey(1) in (27,113):\n  break")'
+   ```
+2. Run `--live ... --snap 300` against the feed (splitter first, then enable the filter).
+3. Latency = `stat -c %.3Y snap.png` (when the frame arrived) minus the clock value
+   visible in `snap.png`. The clock window's own redraw and OBS's capture add tens of
+   ms, so this is an upper bound. Repeat a few times; consistent runs (within ~30 ms)
+   mean a fixed delay somewhere in the chain rather than jitter.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `capture unavailable, reconnecting...` forever | Recording not started / wrong port | Check **Start Recording** is lit red; URL matches `udp://127.0.0.1:9733` |
+| `capture unavailable, reconnecting...` forever | Recording not started / wrong port | Check **Start Recording** is lit red; URL matches `udp://127.0.0.1:9733`. For an `srt://...mode=listener` source the message is normal until OBS connects: enable the Branch Output filter |
+| SRT source: fps reads in the hundreds/thousands, or frames look striped | The filter's real output size differs from `--width/--height` | `ffprobe` the stream and pass the real size, or fix the filter's resolution setting |
+| SRT source: connects only after >10 s | Filter was already on when the splitter started; OBS is waiting to retry | Start the splitter first, then enable the filter (or re-toggle it) |
+| SRT source: latency of several hundred ms | Very low encoder bitrate (CBR pacing) and/or libsrt's default ~120 ms receive latency | Raise bitrate to ~1500 kbps; add `&rcvlatency=20000` (µs) to the URL |
 | Garbage fps / weird match numbers / instant EOF | Resolution mismatch | Sidecar Output (Scaled) Resolution must equal config `capture.width/height` exactly |
 | fps counter pinned below ~60 (e.g. ~45), latency grows the longer it runs | Consumer slower than producer — backlog accumulates every second | Per-frame Python work must stay allocation-free (see AGENTS.md hot-loop rules); check `--live` fps first whenever splits feel late |
 | Splits late by many seconds while fps counter stays steady ~60 | Frames arrive stale from upstream — delay sits in OBS's output path, not the detector | Verify chain via latency measurement; revert risky encoder settings (`delay=0 zerolatency=1`) |
@@ -303,7 +362,7 @@ delay originates in OBS's sidecar output path.
 
 All tunables live in your game config (e.g., `configs/start-powerless.yaml`):
 
-- `capture` — sidecar URL (`udp://`/`tcp://`), pinned 1920×1080, target fps
+- `capture` — sidecar URL (`udp://`, `tcp://` or `srt://`), frame size (must equal the sidecar's output resolution), target fps
 - `roi` — detection region as normalized floats 0.0–1.0 (resolution-independent);
   accepts origin+size (`x/y/width/height`) or corner endpoints (`x1/y1/x2/y2`)
 - `detection` — debounce frames required per split + hysteresis reset threshold
