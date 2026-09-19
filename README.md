@@ -224,8 +224,9 @@ Notes:
   fired.
 - With `--livesplit`, the detector polls LiveSplit every ~2 s for its timer
   phase and current split name (shown in the status line as
-  `ls=Running:"Level 5"`). If LiveSplit's active segment disagrees with the
-  split the detector expects next, a one-time
+  `ls=Running:"Level 5"`). If the split the detector expects next is not
+  contained in LiveSplit's active segment name (substring match, so e.g.
+  `Level 5` matches `Level 5 - Cave`), a one-time
   `WARN: LiveSplit desync: ...` prints until the two agree again.
 - When something looks off, note: fps dips, a late `SPLIT` relative to the
   on-screen transition, `DISCONNECTED` blips, desync `WARN`s, or missing
