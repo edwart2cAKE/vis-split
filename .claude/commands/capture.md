@@ -14,5 +14,5 @@ Act as the orchestrator for this capture change: $ARGUMENTS
 7. `reviewer` checks architecture/resource handling.
 8. `integration-validator` validates OBS → ffmpeg → detector.
 
-Never introduce a second UDP consumer without explicitly evaluating the
+Never introduce a second UDP/SRT consumer without explicitly evaluating the
 existing single-consumer architecture.

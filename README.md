@@ -13,9 +13,9 @@ OBS Studio ──(sidecar mpegts over UDP or SRT)──> ffmpeg subprocess ─�
                                                       127.0.0.1:16834
 ```
 
-Status: Phases 1–5 implemented — config validation, color detection, transition state
+Status: Phases 1–7 implemented — config validation, color detection, transition state
 machine, MPEG-TS frame capture (`udp://`, `tcp://` or `srt://`) with `--live` demo, LiveSplit client, `--loop` rearm,
-`--overlay` diagnostics window, `--probe` color picker.
+`--overlay` diagnostics window, `--probe` color picker, optional PySide6 GUI (`--gui`).
 Design details: see `Project Overview — Roblox Visual.md`; dev rules: see `AGENTS.md`.
 
 ## Requirements
@@ -23,7 +23,7 @@ Design details: see `Project Overview — Roblox Visual.md`; dev rules: see `AGE
 - Linux (developed on Arch/Wayland) with **ffmpeg** on PATH (`sudo pacman -S ffmpeg`)
 - [uv](https://docs.astral.sh/uv/)
 - OBS Studio (for live capture)
-- No other Python dependencies beyond what `uv sync` installs (OpenCV, NumPy, PyYAML)
+- No other required Python dependencies beyond what `uv sync` installs (OpenCV, NumPy, PyYAML); optional extras: `gui` (PySide6) and `ocr` (tesserocr)
 
 ## Setup
 
@@ -52,7 +52,8 @@ Adjust `tolerance` based on how consistent the flash is across runs.
 Per-game configs live in `configs/`:
 - `configs/start-powerless.yaml` — 15 level splits (purple portal flash)
 - `configs/template.yaml` — commented example for new games
-- `configs/roblox.yaml` — legacy Roblox placeholder
+- `configs/mr_rich.yaml` — 12 splits (white/black transitions) with a start gate
+- `configs/test-white.yaml` — white-flash test config (4 splits) for checking the capture pipeline
 
 Run with:
 ```bash
@@ -61,7 +62,7 @@ uv run python -m autosplitter.main --config configs/start-powerless.yaml --live 
 
 ## Testing — three levels, fastest first
 
-### 1. Automated test suite (~0.3 s, no OBS needed)
+### 1. Automated test suite (~2 s, no OBS needed)
 
 ```bash
 uv run pytest -v
@@ -143,7 +144,7 @@ alongside it.
    | File path or URL | `udp://127.0.0.1:9733?pkt_size=1316` |
    | Video Encoder | `h264_nvenc` (GPU) or `libx264` (CPU) — never MPEG-2 |
    | Video Encoder Settings | `bf=0` for nvenc · `tune=zerolatency bf=0` for libx264 |
-   | Common FPS Value | `120` (Settings → Video) — the stream emits at this rate, *not* your monitor's Hz; must match `capture.fps` in your game config |
+   | Common FPS Value | e.g. `120` (Settings → Video) — the stream emits at this rate, *not* your monitor's Hz; must match `capture.fps` in your game config (`start-powerless.yaml` uses 120, the other configs 60) |
    | Rate Control / Bitrate | `CBR` / `4000 Kbps` |
    | Keyframe Interval | `1 s` |
 
@@ -369,6 +370,9 @@ All tunables live in your game config (e.g., `configs/start-powerless.yaml`):
 - `colors` — named RGB targets with tolerance
 - `splits` — ordered transitions referencing defined colors, each with its own match threshold
 - `livesplit` — host/port for the TCP client
+- `start_transition` (optional) — color gate that starts the run and, with `auto_start_timer`, the LiveSplit timer
+- `ocr` (optional, needs the `ocr` extra) — split-name OCR used to resync the detector
+- `record` (optional) — splitter-side recording; planned for removal (see `AGENTS.md`)
 
 Invalid config fails with precise errors such as
 `configs/start-powerless.yaml: splits[2].threshold must be between 0.0 and 1.0`.
@@ -378,9 +382,14 @@ Invalid config fails with precise errors such as
 ```bash
 uv run pytest -v                        # tests
 uvx ruff check .                        # lint
-uv run basedpyright src tests           # typecheck (must be 0 warnings)
+uv run basedpyright src tests           # typecheck (target 0 warnings; ~199 pre-existing, see AGENTS.md)
 uv run python -m autosplitter.main --check   # validate config, print summary
 ```
 
 Verification order per phase: tests → ruff → basedpyright → phase demo command.
+
+Other `main` flags: `--detect IMAGE.png` (run every split's detector over a still image),
+`--record PATH` (splitter-side codec-copy .mkv; planned for removal, see `AGENTS.md`),
+`--config-poll-interval SECONDS` (with `--live`, how often the config file is re-read) and
+`--gui` (PySide6 GUI; needs `uv sync --extra gui`).
 Conventions and architecture rules: see `AGENTS.md`.

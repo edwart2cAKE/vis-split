@@ -1,8 +1,22 @@
 # Project Overview — Roblox Visual Autosplitter
 
+> **Implementation status (see `README.md` and `AGENTS.md` for current detail).**
+> This document is the original design. Phases 1–7 are implemented and the pipeline
+> has been verified end to end with OBS. Where the code differs from the text below,
+> the code and `AGENTS.md` win. Main differences, each noted in its section:
+>
+> - The tool is game-agnostic; Roblox/Sober was the first target (§1).
+> - Frames come from an OBS sidecar stream decoded by an `ffmpeg` subprocess over
+>   `udp://`, `tcp://` or `srt://` (§3, §22).
+> - Config lives in per-game files under `configs/`, not a single `config.yaml` (§12, §21).
+> - The state machine also has `WAITING_FOR_START` and a terminal `DONE` state (§7).
+> - `LiveSplitClient` only sends `start`/`split` and queries state; resets stay with the user (§11).
+> - Beyond the original spec: `--loop` rearm, an optional OCR split-index resync,
+>   an optional PySide6 GUI, and splitter-side recording (planned for removal) (§12, §18, §19).
+
 ## 1. Project Goal
 
-Create a Linux-compatible autosplitter that monitors a Roblox/Sober game window captured by OBS and automatically sends split commands to LiveSplit when a configured visual transition occurs.
+Create a Linux-compatible autosplitter that monitors a game window captured by OBS and automatically sends split commands to LiveSplit when a configured visual transition occurs. The first target was a Roblox/Sober game; the implementation is game-agnostic, with one config per game.
 
 Primary use case:
 
@@ -62,6 +76,12 @@ FrameSource
 
 Initially, support the simplest reliable OBS-compatible input method available on Linux.
 
+**As built:** the interface is the `FrameSource` protocol in `capture/frame_source.py`
+(`read() -> ndarray | None`, `close()`; frames are BGR uint8 `(H, W, 3)`). The
+implementation, `MpegTsFrameSource`, runs one `ffmpeg` child that decodes an MPEG-TS
+stream from OBS to raw BGR on a pipe. Accepted sources are `udp://`, `tcp://`, `srt://`
+and local files, with automatic reconnect for the network ones.
+
 Do not tightly couple the detector to OBS internals.
 
 ## 4. Region of Interest
@@ -102,6 +122,9 @@ roi:
 ```
 
 Coordinates should be normalized from 0.0 to 1.0.
+
+**As built:** the 50% middle region is only the example; the ROI is whatever the game
+config specifies, either as `x/y/width/height` or as corners `x1/y1/x2/y2`.
 
 ## 5. Color Detection
 
@@ -179,6 +202,10 @@ Prefer a color space that makes tolerance meaningful, such as HSV or another app
 
 However, the implementation should remain simple enough to run at high FPS.
 
+**As built:** no HSV. A pixel matches when every BGR channel is within `tolerance` of
+the target (an inclusive cube), computed with a precomputed `cv2.inRange`. Config colors
+are RGB and converted to BGR once when the detector is built.
+
 ## 7. Transition Detection
 
 The most important part of the project is that the autosplitter must detect a transition into the target state, not continuously split while the screen remains that color.
@@ -190,6 +217,13 @@ States:
 - `NORMAL`
 - `TRANSITION`
 - `WAITING_FOR_RESET`
+
+**As built**, two more states exist: `WAITING_FOR_START` (when a `start_transition` gate
+is configured; the first color starts the run and, optionally, the LiveSplit timer) and a
+terminal `DONE`. The last split goes straight to `DONE` on the next frame instead of
+waiting for reset, so a victory screen that keeps the color lit cannot stall the run.
+`--loop` calls `reset()` after the next run's first color stays quiet for
+`detection.restart_quiet_seconds`.
 
 Conceptually:
 
@@ -321,6 +355,13 @@ detect split 2
 
 The split sequence should be controlled by the LiveSplit timer state where possible rather than blindly incrementing locally.
 
+**As built:** the detector advances its own index (only after the target clears). With
+`--livesplit` it polls LiveSplit's timer phase and segment name about every 2 s and
+prints a one-time desync warning if the expected split name isn't contained in
+LiveSplit's current segment name; it never changes LiveSplit's state to fix it. With the
+optional OCR section, the on-screen split number can also resync the index while the
+machine is in `NORMAL`.
+
 ## 11. LiveSplit Communication
 
 Use LiveSplit Server as the initial communication mechanism.
@@ -339,6 +380,12 @@ with methods such as:
 - `pause()`
 - `resume()`
 - `get_state()`
+
+**As built:** `start()`, `split()`, `ping()`, `query()` with the helpers
+`get_current_timer_phase()` and `get_current_split_name()`, and connection handling
+(`connected`, `poll_connection()`, `close()`). `reset`, `pause` and `resume` are
+deliberately not implemented: the user resets their own timer between runs. `split()`
+never raises and never blocks longer than `livesplit.timeout_seconds`.
 
 The detector should not directly implement LiveSplit protocol logic throughout the application.
 
@@ -361,46 +408,35 @@ This makes the LiveSplit communication replaceable later.
 
 ## 12. Project Structure
 
-Recommended structure:
+Recommended structure (as built):
 
 ```text
-roblox-autosplitter/
+vis-split/
 │
 ├── README.md
+├── AGENTS.md
 ├── pyproject.toml
-├── config.yaml
+├── config.yaml              # default for --config; real configs live in configs/
+├── configs/                 # per-game configs, template.yaml, test-white.yaml
+├── docs/PHASE_BASELINE.md
+├── scripts/record.sh        # wraps --record (planned for removal)
 │
 ├── src/
 │   └── autosplitter/
-│       ├── __init__.py
-│       ├── main.py
-│       │
+│       ├── main.py          # CLI: --check --detect --probe --live --gui
 │       ├── config.py
-│       │
-│       ├── capture/
-│       │   ├── __init__.py
-│       │   └── frame_source.py
-│       │
+│       ├── capture/frame_source.py        # FrameSource, RawPipeReader, MpegTsFrameSource
 │       ├── detection/
-│       │   ├── __init__.py
 │       │   ├── color_detector.py
-│       │   └── state_machine.py
-│       │
-│       ├── livesplit/
-│       │   ├── __init__.py
-│       │   └── client.py
-│       │
-│       └── diagnostics/
-│           ├── __init__.py
-│           └── overlay.py
+│       │   ├── state_machine.py           # TransitionDetector
+│       │   └── ocr_detector.py            # optional split-index resync
+│       ├── livesplit/client.py
+│       ├── diagnostics/overlay.py
+│       ├── record/                        # recording path templates (planned for removal)
+│       └── gui/                           # optional PySide6 GUI
 │
-├── tests/
-│   ├── test_color_detector.py
-│   ├── test_state_machine.py
-│   └── test_config.py
-│
-└── images/
-    └── reference/
+└── tests/                   # config, color, state machine, capture, livesplit, ocr, overlay, record
+    └── fixtures/
 ```
 
 ## 13. Dependencies
@@ -415,6 +451,10 @@ Likely:
 - PyYAML
 
 Potentially add a capture-specific package once the OBS frame acquisition method is selected.
+
+**As built:** no capture package was needed; the system `ffmpeg` binary does the decoding.
+Optional extras in `pyproject.toml`: `gui` (PySide6) and `ocr` (tesserocr, plus the system
+`tesseract` package).
 
 Do not add large frameworks unless they solve a demonstrated problem.
 
@@ -521,7 +561,7 @@ When LiveSplit becomes available, reconnect.
 Fail with a useful error:
 
 ```text
-config.yaml: splits[2].threshold must be between 0.0 and 1.0
+configs/your-game.yaml: splits[2].threshold must be between 0.0 and 1.0
 ```
 
 ### Resolution changes
@@ -574,6 +614,10 @@ splits:
 ```
 
 But color detection should be the only detector implemented in v1.
+
+**As built:** the color detector is the only one that fires splits. An `OcrDetector`
+(optional, `ocr:` config section) exists only to resync the split index from an on-screen
+number; template matching is still not implemented.
 
 ## 19. Development Phases
 
@@ -648,6 +692,9 @@ and connect split events to LiveSplit Server.
 
 ### Phase 7 — End-to-End Testing
 
+*(Delivered as the `--loop` rearm feature plus live runs against OBS and LiveSplit; see
+`docs/PHASE_BASELINE.md`. A decoupled SRT sidecar feed was verified end to end afterwards.)*
+
 Test:
 
 ```text
@@ -662,7 +709,7 @@ LiveSplit
 
 with real gameplay.
 
-### Phase 8 — Reliability
+### Phase 8 — Reliability *(ongoing)*
 
 Tune:
 
@@ -685,7 +732,7 @@ Project rules:
 4. Keep LiveSplit communication separate from detection.
 5. Use NumPy/OpenCV vectorized operations for image processing.
 6. Do not iterate through pixels individually in Python.
-7. All configurable values belong in config.yaml.
+7. All configurable values belong in the game config (`configs/<game>.yaml`).
 8. Never hard-code screen resolution.
 9. ROI coordinates must be normalized.
 10. Color matching must support configurable tolerance.
@@ -701,6 +748,10 @@ Project rules:
 20. Never trigger multiple splits from a single continuous transition.
 
 ## 21. Example Initial Configuration
+
+The example below is the original minimal config. A current, fully commented one is
+`configs/template.yaml` (it adds `stream_url`, frame size, `start_transition`,
+`restart_quiet_seconds` and optional `ocr` / `record` sections).
 
 ```yaml
 capture:
@@ -751,6 +802,13 @@ livesplit:
 Before implementing the capture layer, investigate the best OBS frame-access method on Linux/Wayland rather than assuming a particular Python OBS library will work.
 
 The capture implementation is intentionally isolated because it is the most platform-specific part of the application.
+
+**Outcome of that investigation:** obs-websocket screenshot polling managed only ~15–20 fps
+and a virtual camera needs the v4l2loopback kernel module, so capture uses a second OBS
+output (a sidecar stream) decoded by `ffmpeg`. Two variants work: Recording → Custom Output
+(FFmpeg) as `mpegts` over UDP, or the Branch Output filter sending a low-res SRT feed so
+OBS's normal Recording stays free for a full-quality archive. See `README.md` ("Connecting
+OBS") and `AGENTS.md` for settings and measured latency.
 
 The rest of the system should be testable without OBS by feeding prerecorded frames into the detector.
 

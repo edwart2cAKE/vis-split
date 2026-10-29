@@ -7,7 +7,7 @@ This document defines the compatibility baseline for future development.
 - Phase 1 — configuration validation
 - Phase 2 — color detection
 - Phase 3 — transition state machine
-- Phase 4 — MPEG-TS frame capture
+- Phase 4 — MPEG-TS frame capture (udp://, tcp:// and srt:// sources)
 - Phase 5 — diagnostics overlay
 - Phase 6 — LiveSplit client
 - Phase 7 — `--loop` rearm

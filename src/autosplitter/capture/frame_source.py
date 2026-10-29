@@ -17,8 +17,8 @@ OBS-side setup (one time):
       Video Encoder Settings:     tune=zerolatency bf=0   (libx264)
                                   bf=0                   (h264_nvenc)
       Output (scaled) Resolution: must equal capture.width x capture.height
-                                  in config.yaml (pinned 1920x1080 regardless
-                                  of canvas size)
+                                  in your game config (1920x1080 pinned for this
+                                  path, regardless of canvas size)
 
 The OBS sidecar runs alongside Streaming; nothing here touches the stream.
 

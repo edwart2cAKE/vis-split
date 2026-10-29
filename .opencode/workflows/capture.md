@@ -1,6 +1,6 @@
 # Capture Workflow
 
-Use for OBS, MPEG-TS, ffmpeg, UDP, frame assembly, resolution, or reconnect
+Use for OBS, MPEG-TS, ffmpeg, UDP/SRT, frame assembly, resolution, or reconnect
 changes.
 
 1. Explorer maps capture implementation.
@@ -12,5 +12,5 @@ changes.
 7. Reviewer checks architecture/resource handling.
 8. Integration Validator validates OBS → ffmpeg → detector.
 
-Never introduce a second UDP consumer without explicitly evaluating the
+Never introduce a second UDP/SRT consumer without explicitly evaluating the
 existing single-consumer architecture.
