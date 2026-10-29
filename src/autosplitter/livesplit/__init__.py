@@ -5,6 +5,7 @@ of the application only ever calls methods like :meth:`LiveSplitClient.split`.
 """
 
 from .client import LiveSplitClient
+from .follow import Action, Decision, TimerFollower
 from .sync import UndoWatch
 
-__all__ = ["LiveSplitClient", "UndoWatch"]
+__all__ = ["Action", "Decision", "LiveSplitClient", "TimerFollower", "UndoWatch"]

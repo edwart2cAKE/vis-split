@@ -265,6 +265,52 @@ class TestSplitIndex:
         client.close()
 
 
+class TestSplitCount:
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            (b"5\r\n", 5),
+            (b"0\n", 0),
+            (b"-1\n", None),
+            (b"-\n", None),
+            (b"[Error] x\n", None),
+            (b"1_0\n", None),
+            (b"\xd9\xa3\n", None),
+            (b"abc\n", None),
+            (b"\r\n", None),
+        ],
+    )
+    def test_reply_parsing(
+        self, server: RestartableServer, reply: bytes, expected: int | None
+    ) -> None:
+        server.auto_reply = reply
+        client = make_client(server.port)
+        assert client.get_split_count() == expected
+        client.close()
+
+    def test_wire_bytes(self, server: RestartableServer) -> None:
+        server.auto_reply = b"3\n"
+        client = make_client(server.port)
+        assert client.get_split_count() == 3
+        assert server.received_bytes() == b"getsplitcount\n"
+        client.close()
+
+    def test_unreachable_returns_none(self) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        addr = cast("tuple[str, int]", listener.getsockname())
+        listener.close()
+        client = make_client(addr[1])
+        assert client.get_split_count() is None
+
+    def test_dropped_socket_returns_none(self, server: RestartableServer) -> None:
+        server.auto_reply = b"3\n"
+        client = make_client(server.port, reconnect_seconds=60.0)
+        assert client.get_split_count() == 3
+        server.stop()
+        assert client.get_split_count() is None
+
+
 class TestResilience:
     def test_unreachable_server_returns_false_quickly(self) -> None:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

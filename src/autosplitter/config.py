@@ -8,6 +8,7 @@ fail with precise, path-style errors such as:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard, cast
@@ -101,6 +102,9 @@ class LiveSplit:
     timeout_seconds: float = 0.25
     reconnect_seconds: float = 5.0
     resync_on_unsplit: bool = False
+    follow_timer: bool = False
+    follow_pause: bool = False
+    poll_seconds: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -514,6 +518,25 @@ def _parse_livesplit(value: object, label: str) -> LiveSplit:
     if resync_value is not None and not isinstance(resync_value, bool):
         raise ConfigError(f"{label}: livesplit.resync_on_unsplit must be a boolean")
 
+    follow_value = data.get("follow_timer")
+    if follow_value is not None and not isinstance(follow_value, bool):
+        raise ConfigError(f"{label}: livesplit.follow_timer must be a boolean")
+
+    pause_value = data.get("follow_pause")
+    if pause_value is not None and not isinstance(pause_value, bool):
+        raise ConfigError(f"{label}: livesplit.follow_pause must be a boolean")
+    if pause_value is True and follow_value is not True:
+        raise ConfigError(f"{label}: livesplit.follow_pause requires livesplit.follow_timer")
+
+    poll_value = data.get("poll_seconds")
+    if poll_value is not None:
+        if not _is_number(poll_value):
+            raise ConfigError(f"{label}: livesplit.poll_seconds must be a number")
+        if not math.isfinite(poll_value) or poll_value <= 0:
+            raise ConfigError(
+                f"{label}: livesplit.poll_seconds must be greater than 0 and finite"
+            )
+
     return LiveSplit(
         host=host,
         port=port,
@@ -522,6 +545,9 @@ def _parse_livesplit(value: object, label: str) -> LiveSplit:
             float(reconnect_value) if reconnect_value is not None else 5.0
         ),
         resync_on_unsplit=resync_value is True,
+        follow_timer=follow_value is True,
+        follow_pause=pause_value is True,
+        poll_seconds=float(poll_value) if poll_value is not None else 2.0,
     )
 
 

@@ -13,7 +13,7 @@ blocks longer than ``timeout_seconds``. A dead or hung server degrades to
 reconnect attempts are rate-limited to one per ``reconnect_seconds``.
 
 Query commands (``getcurrenttimerphase``, ``getcurrentsplitname``,
-``getsplitindex``) follow
+``getsplitindex``, ``getsplitcount``) follow
 the same contract and return ``None`` on any transport failure. They are
 meant for low-rate polling (a couple of seconds apart), not per-frame use:
 each call can stall up to ``timeout_seconds`` waiting for the response line.
@@ -122,6 +122,16 @@ class LiveSplitClient:
         # Optional sign plus ASCII digits only (int() alone would accept
         # underscores and non-ASCII digits).
         if re.fullmatch(r"[+-]?[0-9]+", text) is None:
+            return None
+        return int(text)
+
+    def get_split_count(self) -> int | None:
+        """Number of segments in LiveSplit's run (>= 0), None on any failure."""
+        line = self.query("getsplitcount")
+        if line is None:
+            return None
+        text = line.strip()
+        if re.fullmatch(r"[+]?[0-9]+", text) is None:
             return None
         return int(text)
 

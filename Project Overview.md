@@ -362,6 +362,16 @@ LiveSplit's current segment name; it never changes LiveSplit's state to fix it. 
 optional OCR section, the on-screen split number can also resync the index while the
 machine is in `NORMAL`.
 
+With the opt-in `livesplit.follow_timer` (implies Unsplit rollback via `getsplitindex`) the
+detector also follows LiveSplit: skip/manual split (jump forward), timer reset (rewind),
+manual start at the start gate, and run end. The detector never sends reset/pause/resume;
+the separate opt-in `livesplit.follow_pause` (requires `follow_timer`; default off because
+"LiveSplit ignores `split` while Paused" is unverified live) freezes detection while the
+timer is Paused and restarts the debounce on resume, with up to one poll interval of lag
+before a pause is seen (the undo rule repairs a split LiveSplit ignored). The same lag applies after resume, where a missed flash is not repaired (keep `poll_seconds` small); 3 consecutive failed polls while paused unfreeze the detector. A split-count mismatch (`getsplitcount`) disables
+index-following. Without `--loop` the process exits at DONE, so undo of the final split is
+out of scope there.
+
 ## 11. LiveSplit Communication
 
 Use LiveSplit Server as the initial communication mechanism.

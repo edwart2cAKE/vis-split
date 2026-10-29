@@ -1494,3 +1494,72 @@ class TestResyncOnUnsplit:
             ConfigError, match="livesplit.resync_on_unsplit must be a boolean"
         ):
             load(self._cfg(tmp_path, f"  resync_on_unsplit: {bad}\n"))
+
+
+class TestFollowTimerConfig:
+    def _cfg(self, tmp_path: Path, extra: str) -> str:
+        return write_config(
+            tmp_path,
+            CAPTURE_TEMPLATE.format(capture_block=VALID_CAPTURE_BLOCK) + extra,
+        )
+
+    def test_defaults(self, tmp_path: Path) -> None:
+        ls = load(self._cfg(tmp_path, "")).livesplit
+        assert ls.follow_timer is False
+        assert ls.poll_seconds == 2.0
+
+    def test_values_accepted(self, tmp_path: Path) -> None:
+        ls = load(
+            self._cfg(tmp_path, "  follow_timer: true\n  poll_seconds: 0.5\n")
+        ).livesplit
+        assert ls.follow_timer is True
+        assert ls.poll_seconds == 0.5
+
+    @pytest.mark.parametrize("bad", ["1", '"yes"', "0"])
+    def test_follow_timer_non_bool_rejected(self, tmp_path: Path, bad: str) -> None:
+        with pytest.raises(ConfigError, match="livesplit.follow_timer must be a boolean"):
+            load(self._cfg(tmp_path, f"  follow_timer: {bad}\n"))
+
+    @pytest.mark.parametrize("bad", ['"fast"', "true"])
+    def test_poll_seconds_non_number_rejected(self, tmp_path: Path, bad: str) -> None:
+        with pytest.raises(ConfigError, match="livesplit.poll_seconds must be a number"):
+            load(self._cfg(tmp_path, f"  poll_seconds: {bad}\n"))
+
+    @pytest.mark.parametrize("bad", ["0", "-1", ".nan", ".inf", "-.inf"])
+    def test_poll_seconds_non_positive_rejected(self, tmp_path: Path, bad: str) -> None:
+        with pytest.raises(ConfigError, match="livesplit.poll_seconds must be greater than 0 and finite"):
+            load(self._cfg(tmp_path, f"  poll_seconds: {bad}\n"))
+
+
+class TestFollowPauseConfig:
+    def _cfg(self, tmp_path: Path, extra: str) -> str:
+        return write_config(
+            tmp_path,
+            CAPTURE_TEMPLATE.format(capture_block=VALID_CAPTURE_BLOCK) + extra,
+        )
+
+    def test_default_false(self, tmp_path: Path) -> None:
+        assert load(self._cfg(tmp_path, "")).livesplit.follow_pause is False
+
+    def test_null_means_default(self, tmp_path: Path) -> None:
+        assert load(self._cfg(tmp_path, "  follow_pause: null\n")).livesplit.follow_pause is False
+
+    def test_true_with_follow_timer(self, tmp_path: Path) -> None:
+        ls = load(
+            self._cfg(tmp_path, "  follow_timer: true\n  follow_pause: true\n")
+        ).livesplit
+        assert ls.follow_pause is True
+
+    def test_true_requires_follow_timer(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="follow_pause requires livesplit.follow_timer"):
+            load(self._cfg(tmp_path, "  follow_pause: true\n"))
+        with pytest.raises(ConfigError, match="follow_pause requires livesplit.follow_timer"):
+            load(self._cfg(tmp_path, "  follow_timer: false\n  follow_pause: true\n"))
+
+    @pytest.mark.parametrize("bad", ["1", '"yes"', "0"])
+    def test_non_bool_rejected(self, tmp_path: Path, bad: str) -> None:
+        with pytest.raises(ConfigError, match="livesplit.follow_pause must be a boolean"):
+            load(self._cfg(tmp_path, f"  follow_timer: true\n  follow_pause: {bad}\n"))
+
+    def test_false_without_follow_timer_ok(self, tmp_path: Path) -> None:
+        assert load(self._cfg(tmp_path, "  follow_pause: false\n")).livesplit.follow_pause is False

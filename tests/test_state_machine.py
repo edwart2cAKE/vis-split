@@ -739,3 +739,194 @@ class TestRollback:
         assert machine.state is State.NORMAL
         assert machine.current_split_index == 0
         assert len(events_of(machine, [1.0])) == 1
+
+
+# ---------------------------------------------------------------------------
+# advance_to / clear_streak (follow LiveSplit skip)
+# ---------------------------------------------------------------------------
+
+
+def five_splits() -> tuple[Split, ...]:
+    return tuple(
+        Split(id=i + 1, name=f"S{i}", color="black", threshold=0.95) for i in range(5)
+    )
+
+
+def five(required_frames: int = 1, start: StartTransition | None = None) -> TransitionDetector:
+    return TransitionDetector(
+        make_config(splits=five_splits(), required_frames=required_frames, start_transition=start)
+    )
+
+
+class TestAdvanceTo:
+    def test_from_normal_settles_then_normal_at_index(self) -> None:
+        m = five()
+        assert m.advance_to(2) is True
+        assert m.state is State.WAITING_FOR_RESET
+        assert m.current_split_index == 2
+        m.feed_result(res(0.5))
+        assert m.state is State.NORMAL
+        assert m.current_split_index == 2
+
+    def test_lit_target_does_not_fire_and_dead_zone_holds(self) -> None:
+        m = five()
+        assert m.advance_to(2)
+        assert events_of(m, [1.0, 1.0, 0.9, 0.8]) == []
+        assert m.state is State.WAITING_FOR_RESET
+        assert m.feed_result(res(0.79)) is None
+        assert m.state is State.NORMAL
+        assert m.current_split_index == 2
+
+    def test_next_streak_from_zero_after_clear(self) -> None:
+        m = five(required_frames=2)
+        m.advance_to(2)
+        m.feed_result(res(0.0))
+        assert events_of(m, [1.0]) == []
+        assert len(events_of(m, [1.0])) == 1
+
+    def test_pending_advance_cancelled(self) -> None:
+        m = five()
+        events_of(m, [1.0, 1.0])  # S0 fired, waiting, expected 1
+        assert m.expected_ls_index == 1
+        assert m.advance_to(3)
+        m.feed_result(res(0.0))
+        assert m.current_split_index == 3  # not 4
+        assert m.state is State.NORMAL
+
+    def test_from_waiting_for_start(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        m = five(start=start)
+        assert m.state is State.WAITING_FOR_START
+        assert m.advance_to(0) is True
+        assert m.state is State.WAITING_FOR_RESET
+        m2 = five(start=start)
+        assert m2.advance_to(2) is True
+        assert m2.current_split_index == 2
+
+    def test_refused_in_transition_and_done(self) -> None:
+        m = five()
+        fire_first(m)
+        assert m.state is State.TRANSITION
+        assert m.advance_to(3) is False
+        m2 = TransitionDetector(make_config(required_frames=1))
+        events_of(m2, [1.0, 1.0, 0.0, 1.0, 1.0])
+        assert m2.finished
+        assert m2.advance_to(2) is False
+
+    def test_boundaries(self) -> None:
+        m = five()
+        assert m.advance_to(0) is False  # == expected
+        assert m.advance_to(-1) is False
+        assert m.advance_to(6) is False  # > N
+        assert m.state is State.NORMAL
+        assert m.current_split_index == 0
+
+    def test_index_equal_expected_refused_in_flight(self) -> None:
+        m = five()
+        events_of(m, [1.0, 1.0])
+        assert m.advance_to(1) is False  # == expected (index 0 + lead)
+        assert m.advance_to(2) is True
+
+    def test_index_n_goes_done(self) -> None:
+        m = five()
+        assert m.advance_to(5) is True
+        assert m.finished
+        assert m.current_split is None
+        assert events_of(m, [1.0] * 5) == []
+
+    def test_no_duplicate_split_on_continuous_color(self) -> None:
+        m = five()
+        fired = events_of(m, [1.0, 1.0])
+        assert m.advance_to(2)
+        fired += events_of(m, [1.0] * 30)
+        assert len(fired) == 1
+
+    def test_clear_streak(self) -> None:
+        m = five(required_frames=3)
+        events_of(m, [1.0, 1.0])
+        m.clear_streak()
+        assert m.state is State.NORMAL
+        assert events_of(m, [1.0, 1.0]) == []
+        assert len(events_of(m, [1.0])) == 1
+
+
+# ---------------------------------------------------------------------------
+# reset(settle=True) and lifecycle uses of advance_to
+# ---------------------------------------------------------------------------
+
+
+class TestSettleReset:
+    def test_default_reset_unchanged(self) -> None:
+        m = five()
+        events_of(m, [1.0, 1.0])
+        m.reset()
+        assert m.state is State.NORMAL and m.current_split_index == 0
+        assert len(events_of(m, [1.0])) == 1  # lit color fires immediately
+
+    def test_settle_without_gate_blocks_lit_color(self) -> None:
+        m = five()
+        events_of(m, [1.0, 1.0, 0.0, 1.0, 1.0])
+        m.reset(settle=True)
+        assert m.state is State.WAITING_FOR_RESET
+        assert m.current_split_index == 0
+        assert not m.finished
+        assert events_of(m, [1.0] * 10) == []
+
+    def test_settle_clears_only_strictly_below_threshold(self) -> None:
+        m = five()
+        m.reset(settle=True)
+        m.feed_result(res(0.80))
+        assert m.state is State.WAITING_FOR_RESET
+        m.feed_result(res(0.7999))
+        assert m.state is State.NORMAL
+        assert m.current_split_index == 0
+        assert len(events_of(m, [1.0])) == 1
+
+    def test_settle_with_gate_is_waiting_for_start(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        m = five(start=start)
+        events_of(m, [1.0, 1.0, 0.0])
+        m.reset(settle=True)
+        assert m.state is State.WAITING_FOR_START
+        assert m.current_split_index == 0
+
+    def test_settle_reset_from_done(self) -> None:
+        m = five()
+        assert m.advance_to(5)
+        m.reset(settle=True)
+        assert not m.finished
+        assert m.state is State.WAITING_FOR_RESET
+
+
+class TestLifecycleAdvance:
+    def test_manual_start_index_zero(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        m = five(start=start)
+        assert m.advance_to(0) is True
+        assert m.state is State.WAITING_FOR_RESET and m.current_split_index == 0
+        assert events_of(m, [1.0] * 5) == []  # gate/split color lit: no fire
+        m.feed_result(res(0.0))
+        assert m.state is State.NORMAL
+
+    def test_manual_start_index_above_zero(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        m = five(start=start)
+        assert m.advance_to(3) is True
+        assert m.current_split_index == 3
+
+    def test_run_ended_then_reset_rearms(self) -> None:
+        m = five()
+        assert m.advance_to(5) is True
+        assert m.finished and m.current_split is None
+        assert events_of(m, [1.0] * 5) == []
+        m.reset()
+        assert m.state is State.NORMAL and m.current_split_index == 0
+
+
+class TestClearStreakPause:
+    def test_clear_streak_mid_streak_prevents_completion(self) -> None:
+        m = five(required_frames=3)
+        assert events_of(m, [1.0, 1.0]) == []  # streak 2
+        m.clear_streak()  # pause / resume
+        assert events_of(m, [1.0]) == []  # would have completed without clear
+        assert events_of(m, [1.0, 1.0]) != []

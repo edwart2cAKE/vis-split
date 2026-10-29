@@ -13,7 +13,7 @@ permission:
 
 You are a read-only software archaeologist. Do not modify files.
 
-Read `AGENTS.md`, `Project Overview — Roblox Visual.md`, relevant source,
+Read `AGENTS.md`, `Project Overview.md`, relevant source,
 tests, and configs.
 
 Report:

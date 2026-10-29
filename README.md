@@ -16,7 +16,7 @@ OBS Studio ──(sidecar mpegts over UDP or SRT)──> ffmpeg subprocess ─�
 Status: Phases 1–7 implemented — config validation, color detection, transition state
 machine, MPEG-TS frame capture (`udp://`, `tcp://` or `srt://`) with `--live` demo, LiveSplit client, `--loop` rearm,
 `--overlay` diagnostics window, `--probe` color picker, optional PySide6 GUI (`--gui`).
-Design details: see `Project Overview — Roblox Visual.md`; dev rules: see `AGENTS.md`.
+Design details: see `Project Overview.md`; dev rules: see `AGENTS.md`.
 
 ## Requirements
 
@@ -239,6 +239,34 @@ Behavior:
   like an undo and rolls the detector back to 0; skip split and the GUI are not
   handled; it can conflict with OCR index resync. Verify `getsplitindex` replies
   against your LiveSplit first.
+- **Follow the LiveSplit timer (opt-in).** `livesplit.follow_timer: true`
+  (implies Unsplit rollback; `livesplit.poll_seconds` sets the poll interval, default 2 s)
+  also makes the detector jump forward when LiveSplit is ahead of it (skip split, or a
+  split you press manually; the two look identical). The jump needs two agreeing polls
+  and the new split's color must clear before it is watched, so it cannot double-fire.
+  Also followed: a timer reset (the detector rewinds and waits for the first color to
+  clear), starting the timer by hand while the detector waits at the start gate, and the
+  run ending in LiveSplit (the detector goes DONE). If you reset while the start gate's
+  color is lit and `auto_start_timer` is on, the timer auto-starts immediately. The run end is only followed
+  after the timer was seen Running in this connection/rearm (a stale Ended timer is
+  ignored). A reset or restart while the splitter is disconnected from LiveSplit is
+  invisible (only the desync warning fires). The detector never sends reset/pause/resume.
+  Optional `livesplit.follow_pause: true` (needs `follow_timer`; off by default) freezes
+  detection while LiveSplit is Paused (status shows `FROZEN`) and restarts the debounce on
+  resume. It is off because "LiveSplit ignores `split` while Paused" is inferred from
+  source, not live-tested: pause once, trigger a detector split, and see what happens
+  before enabling it. Up to one poll interval of detection can run before the pause is
+  noticed; a split sent in that window is ignored by LiveSplit and the undo rule repairs
+  the one-ahead detector after ~3 s + 2 polls. The same lag applies on resume: a split color
+  that flashes after you resume but before the next poll is skipped by the freeze and not
+  repaired (LiveSplit ends up behind; split manually and the detector follows), so keep
+  `poll_seconds` small. If LiveSplit stops answering for 3 polls while paused, the detector
+  unfreezes with a notice. OCR resync still runs while frozen; Ended also lifts the freeze. If
+  LiveSplit's segment count differs from your config's splits, skip-forward, manual
+  start and run end following are disabled with a warning. Older LiveSplit servers may
+  not support `getsplitcount`; then the check is skipped with a notice. After a followed
+  jump, an Unsplit within ~3 s is ignored (undo hold-off). Without `--loop` the process
+  exits when the run completes, so undoing the final split is not supported there.
 - Wire protocol facts (for debugging): commands are newline-terminated
   (`split\n`); `split` produces no response; `ping` answers `pong`.
 

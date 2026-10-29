@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -20,10 +21,10 @@ import cv2
 import numpy as np
 
 from .capture import MpegTsFrameSource
-from .config import DEFAULT_ROI, Config, ConfigError, Record, load
+from .config import DEFAULT_ROI, Config, ConfigError, Record, Split, load
 from .detection import DetectionResult, StartEvent, State, TransitionDetector
 from .diagnostics import annotate
-from .livesplit import LiveSplitClient, UndoWatch
+from .livesplit import Action, Decision, LiveSplitClient, TimerFollower, UndoWatch
 from .record import resolve_path
 
 
@@ -205,6 +206,231 @@ def _reload_config(
         return None
 
 
+@dataclass(frozen=True)
+class _FollowPollResult:
+    phase: str | None
+    name: str | None
+    ok: bool
+    suppress: bool
+    message: str | None = None
+    clear_last_split: bool = False
+    # False for PAUSE/RESUME: they must not start the undo hold-off.
+    touch_last_split: bool = True
+
+
+# Consecutive failed polls while paused before the detector is thawed.
+_THAW_AFTER_FAILURES = 3
+
+
+class _FollowPoller:
+    """One follow_timer poll: queries, follower decision, machine update.
+
+    Lives outside ``_run_live`` so the hot loop's control flow stays small.
+    Called at most every ``livesplit.poll_seconds``, never per frame.
+    """
+
+    def __init__(self, n_splits: int, loop: bool = False, pause: bool = False) -> None:
+        self._n_splits: int = n_splits
+        self._loop: bool = loop
+        self._follower: TimerFollower = TimerFollower(pause)
+        # Plain attribute mirror of the follower's paused flag: the frame loop
+        # reads it once per frame to freeze detection.
+        self.paused: bool = False
+        self._failures: int = 0
+        self._count_checked: bool = False
+        self._skip_enabled: bool = True
+        self._prev_index: int | None = None
+
+    def disarm(self) -> None:
+        self._follower.disarm()
+        self.paused = False
+        self._failures = 0
+
+    def connection_lost(self) -> None:
+        self._count_checked = False
+        self._skip_enabled = True
+        # A fresh connection may be an idle LiveSplit: not a RESET.
+        self._follower.disarm()
+        self.paused = False
+        self._failures = 0
+
+    def _abort(
+        self,
+        machine: TransitionDetector,
+        phase: str | None,
+        cached_name: str | None,
+        suppress: bool,
+    ) -> _FollowPollResult:
+        """Failed query: clear candidates, still apply phase-only actions.
+
+        PAUSE/RESUME depend only on the phase, so they take effect even when
+        the index query failed. After ``_THAW_AFTER_FAILURES`` consecutive
+        failed polls while paused the detector is thawed (safety valve).
+        """
+        decision = self._clear_pending(phase, None)
+        message: str | None = None
+        if decision.action in (Action.PAUSE, Action.RESUME):
+            message = _apply_decision(machine, decision)
+            self._failures = 0
+        else:
+            self._failures += 1
+            if self._follower.paused and self._failures >= _THAW_AFTER_FAILURES:
+                self._follower.unpause()
+                machine.clear_streak()
+                self._failures = 0
+                message = "LiveSplit: no answers while paused — detector unfrozen"
+        self.paused = self._follower.paused
+        return _FollowPollResult(
+            phase, cached_name, False, suppress, message, touch_last_split=False
+        )
+
+    def _clear_pending(self, phase: str | None, index: int | None) -> Decision:
+        """Feed a failed poll so 'consecutive polls' really are consecutive."""
+        return self._follower.observe(
+            phase=phase,
+            ls_index=index,
+            expected=0,
+            n_splits=self._n_splits,
+            now=time.monotonic(),
+            last_split_time=None,
+            suppress=True,
+            can_back=False,
+            can_fwd=False,
+            waiting_for_start=True,
+        )
+
+    def poll(
+        self,
+        client: LiveSplitClient,
+        machine: TransitionDetector,
+        cached_name: str | None,
+        last_split_time: float | None,
+        suppress: bool,
+    ) -> _FollowPollResult:
+        phase = client.get_current_timer_phase()
+        if phase is None:
+            return self._abort(machine, None, cached_name, suppress)
+        if phase == "NotRunning":
+            self._failures = 0
+            # No index/name queries, but observe still runs so RESET can fire.
+            decision = self._follower.observe(
+                phase=phase,
+                ls_index=None,
+                expected=machine.expected_ls_index,
+                n_splits=self._n_splits,
+                now=time.monotonic(),
+                last_split_time=last_split_time,
+                suppress=suppress,
+                can_back=False,
+                can_fwd=False,
+                waiting_for_start=machine.waiting_for_start,
+            )
+            message = _apply_decision(
+                machine, decision, allow_rewind_done=self._loop
+            )
+            self.paused = self._follower.paused
+            if message is not None:
+                return _FollowPollResult(
+                    phase, cached_name, False, False, message, clear_last_split=True
+                )
+            return _FollowPollResult(phase, cached_name, False, suppress)
+        index = client.get_split_index()
+        if index is None:
+            return self._abort(machine, phase, cached_name, suppress)
+        self._failures = 0
+        if not self._count_checked and phase in ("Running", "Paused", "Ended"):
+            self._count_checked = True
+            total = client.get_split_count()
+            if total is None:
+                print(
+                    "\nLiveSplit: split count unavailable; skip-forward runs"
+                    + " without validating against len(splits)"
+                )
+            elif total != self._n_splits:
+                self._skip_enabled = False
+                print(
+                    f"\nWARN: LiveSplit has {total} segments but config has"
+                    + f" {self._n_splits} splits; skip-forward following disabled"
+                )
+        expected = machine.expected_ls_index
+        name = cached_name
+        if index != expected or index != self._prev_index or name is None:
+            name = client.get_current_split_name()
+        self._prev_index = index
+        if index == expected:
+            suppress = False
+        state = machine.state
+        decision = self._follower.observe(
+            phase=phase,
+            ls_index=index,
+            expected=expected,
+            n_splits=self._n_splits,
+            now=time.monotonic(),
+            last_split_time=last_split_time,
+            suppress=suppress,
+            can_back=state in (State.NORMAL, State.WAITING_FOR_RESET, State.DONE),
+            can_fwd=self._skip_enabled
+            and state in (State.WAITING_FOR_START, State.NORMAL, State.WAITING_FOR_RESET),
+            waiting_for_start=machine.waiting_for_start,
+        )
+        message = _apply_decision(machine, decision)
+        self.paused = self._follower.paused
+        touch = decision.action not in (Action.PAUSE, Action.RESUME)
+        if message is not None and touch:
+            suppress = False
+        return _FollowPollResult(
+            phase, name, True, suppress, message, touch_last_split=touch
+        )
+
+
+def _apply_decision(
+    machine: TransitionDetector, decision: Decision, *, allow_rewind_done: bool = True
+) -> str | None:
+    """Apply a follower decision to the machine; log line if it took effect.
+
+    ``allow_rewind_done`` lets a timer RESET rearm a finished machine (only
+    meaningful with --loop; without it the run exits at DONE).
+    """
+    action = decision.action
+    if action is Action.PAUSE:
+        machine.clear_streak()
+        return "LiveSplit: timer PAUSED — detector frozen"
+    if action is Action.RESUME:
+        machine.clear_streak()
+        return "LiveSplit: timer RESUMED"
+    if action is Action.RESET:
+        if machine.finished and not allow_rewind_done:
+            return None
+        machine.reset(settle=True)
+        return "LiveSplit: timer RESET — detector rewound"
+    index = decision.index
+    if index is None:
+        return None
+    if action is Action.MANUAL_START:
+        if not machine.advance_to(index):
+            return None
+        return "LiveSplit: timer started — detector left the start gate"
+    if action is Action.RUN_ENDED:
+        if not machine.advance_to(index):
+            return None
+        return "LiveSplit: run ended — detector DONE"
+    current: Split | None = None
+    if action is Action.ROLLBACK:
+        if not machine.rollback_to(index):
+            return None
+        current = machine.current_split
+        verb = "UNSPLIT detected — detector rolled back to"
+    elif action is Action.SKIP_FORWARD:
+        if not machine.advance_to(index):
+            return None
+        current = machine.current_split
+        verb = "SKIP/manual split detected — detector advanced to"
+    else:
+        return None
+    name = current.name if current is not None else ""
+    return f'LiveSplit: {verb} "{name}" (index {index})'
+
+
 def _run_live(
     cfg: Config,
     source_override: str | None,
@@ -313,7 +539,7 @@ def _run_live(
     # Low-rate LiveSplit sync polling (wall-clock gated, not per-frame):
     # each query can stall up to livesplit.timeout_seconds, so poll both
     # phase and split name at most every couple of seconds.
-    ls_poll_interval = 2.0
+    ls_poll_interval = cfg.livesplit.poll_seconds
     ls_next_poll = 0.0
     ls_phase: str | None = None
     ls_name: str | None = None
@@ -324,9 +550,15 @@ def _run_live(
     # went undelivered (LiveSplit is legitimately behind the detector).
     undo_watch = UndoWatch()
     undo_suppress = False
-    if cfg.ocr is not None and cfg.livesplit.resync_on_unsplit:
+    # follow_timer replaces the legacy undo path: rollback plus skip-forward.
+    follow_enabled = cfg.livesplit.follow_timer
+    done_nudged = False
+    follow_poller = _FollowPoller(
+        len(cfg.splits), loop_enabled, cfg.livesplit.follow_pause
+    )
+    if cfg.ocr is not None and (cfg.livesplit.resync_on_unsplit or follow_enabled):
         print(
-            "WARN: ocr and livesplit.resync_on_unsplit are both enabled; OCR"
+            "WARN: ocr and livesplit.resync_on_unsplit/follow_timer are both enabled; OCR"
             + " resync and unsplit rollback can disagree and flip-flop the index"
         )
 
@@ -420,8 +652,22 @@ def _run_live(
             unavailable = False
 
             ratio = _frame_ratio(machine, frame)
-            event = machine.feed_result(res_from_ratio(ratio))
+            # follow_pause: the timer is paused, detection is frozen (the
+            # ratio is still computed for the HUD/status).
+            if follow_poller.paused:
+                event = None
+            else:
+                event = machine.feed_result(res_from_ratio(ratio))
             machine.check_ocr_resync(frame, frame_index)
+            # follow_timer: poll LiveSplit right away once the run completes
+            # so the non-loop exit does not wait out poll_seconds.
+            if follow_enabled:
+                if machine.finished:
+                    if not done_nudged:
+                        done_nudged = True
+                        ls_next_poll = 0.0
+                else:
+                    done_nudged = False
 
             # --loop rearm watch: once finished, track the NEXT run's first
             # split color (or start color if start_transition configured);
@@ -443,6 +689,7 @@ def _run_live(
                         machine.reset()
                         quiet_frames = 0
                         undo_watch.disarm()
+                        follow_poller.disarm()
                         undo_suppress = False
                         print(f"\nRUN COMPLETE — rearmed, watching for {waiting_for}")
 
@@ -450,6 +697,8 @@ def _run_live(
                 connected_now = client.poll_connection()
                 if connected_now != ls_was_connected:
                     ls_was_connected = connected_now
+                    if not connected_now:
+                        follow_poller.connection_lost()
                     print(
                         "\nLiveSplit: "
                         + ("CONNECTED" if connected_now else "DISCONNECTED (retrying)")
@@ -475,11 +724,29 @@ def _run_live(
                 if now >= ls_next_poll:
                     ls_next_poll = now + ls_poll_interval
                     if client.poll_connection():
-                        ls_phase = client.get_current_timer_phase()
-                        ls_name = client.get_current_split_name()
+                        poll_ok = True
+                        if follow_enabled:
+                            fres = follow_poller.poll(
+                                client, machine, ls_name, last_split_time, undo_suppress
+                            )
+                            ls_phase = fres.phase
+                            ls_name = fres.name
+                            poll_ok = fres.ok
+                            undo_suppress = fres.suppress
+                            if fres.message is not None:
+                                print("\n" + fres.message)
+                                sync_warned = None
+                                quiet_frames = 0
+                                if fres.clear_last_split:
+                                    last_split_time = None
+                                elif fres.touch_last_split:
+                                    last_split_time = time.monotonic()
+                        else:
+                            ls_phase = client.get_current_timer_phase()
+                            ls_name = client.get_current_split_name()
                         # Compare only while LiveSplit is actively running;
                         # NotRunning/Paused/Ended carry no segment meaning.
-                        if ls_phase == "Running" and isinstance(ls_name, str):
+                        if poll_ok and ls_phase == "Running" and isinstance(ls_name, str):
                             local_split = machine.current_split
                             local_next = (
                                 local_split.name if local_split is not None else ""
@@ -495,7 +762,7 @@ def _run_live(
                                     )
                             else:
                                 sync_warned = None
-                        if cfg.livesplit.resync_on_unsplit:
+                        if not follow_enabled and cfg.livesplit.resync_on_unsplit:
                             ls_index = client.get_split_index()
                             expected_idx = machine.expected_ls_index
                             if ls_index == expected_idx:
@@ -591,6 +858,8 @@ def _run_live(
                 line += f"  {ocr_col:>6}"
             if loop_enabled and machine.finished:
                 line += f"  quiet {quiet_frames}/{quiet_needed}"
+            if follow_poller.paused:
+                line += "  FROZEN"
             if livesplit_enabled and ls_phase is not None:
                 shown_name = (ls_name or "").strip()
                 line += f'  ls={ls_phase}:"{shown_name[:24]}"'

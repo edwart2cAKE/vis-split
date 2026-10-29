@@ -6,7 +6,7 @@ argument-hint: <what to build>
 Act as the orchestrator for this feature: $ARGUMENTS
 
 Phases 1–7 are the compatibility baseline. Read `AGENTS.md` and
-`Project Overview — Roblox Visual.md` before making architectural decisions.
+`Project Overview.md` before making architectural decisions.
 
 1. Define the task and acceptance criteria.
 2. `explorer` maps affected implementation.

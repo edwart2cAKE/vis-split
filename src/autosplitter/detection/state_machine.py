@@ -25,6 +25,10 @@ Semantics contract:
   from re-triggering on the same color; after the last one there is nothing
   left to protect, and a persistent victory screen must not stall the run.
 - Once in DONE the machine ignores further frames until :meth:`reset`.
+- ``rollback_to`` / ``advance_to`` (LiveSplit Unsplit / skip-follow) land on an
+  arbitrary index by entering WAITING_FOR_RESET with ``_transition_is_start``
+  set ("settle without advance"): the target's color must read strictly below
+  ``reset_threshold`` before NORMAL, so a lit color never double-fires.
 - If start_transition is configured, ``reset()`` returns to WAITING_FOR_START
   instead of NORMAL, and the loop rearm watches for the start color again.
 """
@@ -93,7 +97,8 @@ class TransitionDetector:
         # True while TRANSITION was entered from the start gate (vs a split):
         # decides whether settling waits for the gate color and keeps the
         # split index, or advances / ends the run. It also means "settle
-        # without advance" for :meth:`rollback_to`, which reuses that path.
+        # without advance" for :meth:`rollback_to` and :meth:`advance_to`,
+        # which reuse that path to land on an arbitrary index.
         self._transition_is_start: bool = False
 
         # OCR worker (optional — augments color detection by re-syncing index)
@@ -164,13 +169,22 @@ class TransitionDetector:
     def waiting_for_start(self) -> bool:
         return self._state is State.WAITING_FOR_START
 
-    def reset(self) -> None:
-        """Restart from the beginning (start transition or first split)."""
+    def reset(self, *, settle: bool = False) -> None:
+        """Restart from the beginning (start transition or first split).
+
+        ``settle=True`` (follow_timer: LiveSplit's timer was reset) without a
+        start gate lands in WAITING_FOR_RESET at index 0 with "settle without
+        advance", so a still-lit split-0 color cannot fire into an idle
+        timer; with a start gate it is identical to the default.
+        """
         self._index = 0
         self._streak = 0
         self._transition_is_start = False
         if self._config.start_transition is not None:
             self._state = State.WAITING_FOR_START
+        elif settle:
+            self._transition_is_start = True
+            self._state = State.WAITING_FOR_RESET
         else:
             self._state = State.NORMAL
 
@@ -210,6 +224,42 @@ class TransitionDetector:
             self._transition_is_start = True
             self._state = State.WAITING_FOR_RESET
         return True
+
+    def advance_to(self, index: int) -> bool:
+        """Jump forward because LiveSplit is ahead (skip / manual split).
+
+        Allowed in WAITING_FOR_START / NORMAL / WAITING_FOR_RESET; refused in
+        TRANSITION and DONE, for ``index <= expected_ls_index`` (any
+        non-negative index in WAITING_FOR_START) and for ``index`` beyond the
+        split count. ``index == len(splits)`` ends the run (DONE); otherwise
+        the machine settles in WAITING_FOR_RESET without advancing, so the
+        target split's color must read strictly below ``reset_threshold``
+        before it is watched (no immediate re-fire; a pending +1 advance is
+        cancelled).
+        """
+        n = len(self._config.splits)
+        if self._state not in (
+            State.WAITING_FOR_START,
+            State.NORMAL,
+            State.WAITING_FOR_RESET,
+        ):
+            return False
+        floor = 0 if self._state is State.WAITING_FOR_START else self.expected_ls_index + 1
+        if index < floor or index > n:
+            return False
+        self._index = index
+        self._streak = 0
+        if index >= n:
+            self._transition_is_start = False
+            self._state = State.DONE
+        else:
+            self._transition_is_start = True
+            self._state = State.WAITING_FOR_RESET
+        return True
+
+    def clear_streak(self) -> None:
+        """Drop the debounce streak without changing state."""
+        self._streak = 0
 
     @property
     def ocr_text(self) -> str | None:

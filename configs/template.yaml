@@ -101,6 +101,26 @@ livesplit:
   # `getsplitindex`; the detector never writes LiveSplit state). Verify that
   # `getsplitindex` replies against your LiveSplit version first.
   resync_on_unsplit: false
+  # Follow the LiveSplit timer (implies resync_on_unsplit): besides Unsplit
+  # rollback, a skip split / manual split in LiveSplit (index ahead of the
+  # detector) makes the detector jump forward; also follows timer reset,
+  # a manual start at the start gate, and the run ending (pause: see follow_pause). `getsplitcount` may be unsupported on older servers (validation is then
+  # skipped with a notice). Verify `getsplitindex`/`getsplitcount` replies
+  # against your LiveSplit first. After a reset, a lit start-gate color with
+  # auto_start_timer auto-starts the timer immediately.
+  # Ended is only followed after the timer was seen Running (stale Ended is
+  # ignored); a reset made while disconnected from LiveSplit is not seen.
+  follow_timer: false
+  # Freeze detection while LiveSplit is Paused (requires follow_timer). Off by
+  # default: 'split is ignored while Paused' is inferred from LiveSplit source and
+  # not live-tested; pause once, trigger a detector split and observe first. Up to
+  # one poll interval of detection can run before the pause is noticed (the undo
+  # rule then repairs a split LiveSplit ignored). Never sends pause/resume.
+  # The same lag applies after resuming (a flash before the next poll is missed and
+  # not repaired): keep poll_seconds small. 3 failed polls while paused unfreeze.
+  follow_pause: false
+  # Seconds between LiveSplit state polls (never per frame); finite and > 0.
+  poll_seconds: 2.0
 
 # record:
 #   # Path template for recordings. Variables: {game}, {date}, {time},
