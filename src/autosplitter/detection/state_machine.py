@@ -92,7 +92,8 @@ class TransitionDetector:
         self._streak: int = 0
         # True while TRANSITION was entered from the start gate (vs a split):
         # decides whether settling waits for the gate color and keeps the
-        # split index, or advances / ends the run.
+        # split index, or advances / ends the run. It also means "settle
+        # without advance" for :meth:`rollback_to`, which reuses that path.
         self._transition_is_start: bool = False
 
         # OCR worker (optional — augments color detection by re-syncing index)
@@ -172,6 +173,43 @@ class TransitionDetector:
             self._state = State.WAITING_FOR_START
         else:
             self._state = State.NORMAL
+
+    @property
+    def expected_ls_index(self) -> int:
+        """Split index LiveSplit should report given what the detector fired.
+
+        A split in flight (TRANSITION / WAITING_FOR_RESET) has already been
+        sent but ``_index`` only advances on clear, so LiveSplit is one ahead.
+        Start-gate settling and DONE (index exhausted) need no adjustment.
+        """
+        if (
+            self._state in (State.TRANSITION, State.WAITING_FOR_RESET)
+            and not self._transition_is_start
+        ):
+            return self._index + 1
+        return self._index
+
+    def rollback_to(self, index: int) -> bool:
+        """Roll back after the user undid split(s) in LiveSplit.
+
+        Acts only in NORMAL / WAITING_FOR_RESET / DONE and only for an index
+        below :attr:`expected_ls_index`. From WAITING_FOR_RESET / DONE the
+        machine re-enters WAITING_FOR_RESET without advancing, so a color
+        that is still lit must drop below ``reset_threshold`` first (no
+        duplicate split) and any pending advance is cancelled.
+        """
+        if self._state not in (State.NORMAL, State.WAITING_FOR_RESET, State.DONE):
+            return False
+        if not 0 <= index < len(self._config.splits):
+            return False
+        if index >= self.expected_ls_index:
+            return False
+        self._index = index
+        self._streak = 0
+        if self._state is not State.NORMAL:
+            self._transition_is_start = True
+            self._state = State.WAITING_FOR_RESET
+        return True
 
     @property
     def ocr_text(self) -> str | None:

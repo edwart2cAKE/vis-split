@@ -21,9 +21,9 @@ import numpy as np
 
 from .capture import MpegTsFrameSource
 from .config import DEFAULT_ROI, Config, ConfigError, Record, load
-from .detection import DetectionResult, StartEvent, TransitionDetector
+from .detection import DetectionResult, StartEvent, State, TransitionDetector
 from .diagnostics import annotate
-from .livesplit import LiveSplitClient
+from .livesplit import LiveSplitClient, UndoWatch
 from .record import resolve_path
 
 
@@ -320,6 +320,15 @@ def _run_live(
     # Last (local, remote) pair already warned about; cleared when they
     # agree again so a later drift re-warns instead of staying silent.
     sync_warned: tuple[str, str] | None = None
+    # Unsplit rollback (opt-in): confirm across polls; suppress while a split
+    # went undelivered (LiveSplit is legitimately behind the detector).
+    undo_watch = UndoWatch()
+    undo_suppress = False
+    if cfg.ocr is not None and cfg.livesplit.resync_on_unsplit:
+        print(
+            "WARN: ocr and livesplit.resync_on_unsplit are both enabled; OCR"
+            + " resync and unsplit rollback can disagree and flip-flop the index"
+        )
 
     # Overlay setup — force xcb on pure Wayland (OpenCV Qt backend has no Wayland plugin).
     if "QT_QPA_PLATFORM" not in os.environ and overlay_enabled:
@@ -433,6 +442,8 @@ def _run_live(
                     if quiet_frames >= quiet_needed:
                         machine.reset()
                         quiet_frames = 0
+                        undo_watch.disarm()
+                        undo_suppress = False
                         print(f"\nRUN COMPLETE — rearmed, watching for {waiting_for}")
 
             if client is not None:
@@ -453,6 +464,12 @@ def _run_live(
                         delivered = client.split()
                         if not delivered:
                             print("\nLiveSplit: split NOT DELIVERED (server unreachable)")
+                            if not undo_suppress:
+                                print(
+                                    "LiveSplit: unsplit detection paused until"
+                                    + " LiveSplit catches up"
+                                )
+                            undo_suppress = True
                     last_split_time = time.monotonic()
 
                 if now >= ls_next_poll:
@@ -478,6 +495,31 @@ def _run_live(
                                     )
                             else:
                                 sync_warned = None
+                        if cfg.livesplit.resync_on_unsplit:
+                            ls_index = client.get_split_index()
+                            expected_idx = machine.expected_ls_index
+                            if ls_index == expected_idx:
+                                undo_suppress = False
+                            target = undo_watch.observe(
+                                ls_phase,
+                                ls_index,
+                                expected_idx,
+                                time.monotonic(),
+                                last_split_time,
+                                undo_suppress,
+                                machine.state
+                                in (State.NORMAL, State.WAITING_FOR_RESET, State.DONE),
+                            )
+                            if target is not None and machine.rollback_to(target):
+                                rolled = machine.current_split
+                                rolled_name = rolled.name if rolled is not None else ""
+                                print(
+                                    "\nLiveSplit: UNSPLIT detected — detector rolled"
+                                    + f' back to "{rolled_name}" (index {target})'
+                                )
+                                sync_warned = None
+                                quiet_frames = 0
+                                undo_suppress = False
 
             # Redraw at most 10 Hz: printing to a terminal every frame stalls
             # the read loop, backs up the ffmpeg pipe, and triggers UDP

@@ -1472,3 +1472,25 @@ class TestOcr:
         )
         with pytest.raises(ConfigError, match=r"poll_interval_frames must be at least 1"):
             load(path)
+
+
+class TestResyncOnUnsplit:
+    def _cfg(self, tmp_path: Path, extra: str) -> str:
+        return write_config(
+            tmp_path,
+            CAPTURE_TEMPLATE.format(capture_block=VALID_CAPTURE_BLOCK) + extra,
+        )
+
+    def test_default_false(self, tmp_path: Path) -> None:
+        assert load(self._cfg(tmp_path, "")).livesplit.resync_on_unsplit is False
+
+    def test_true_accepted(self, tmp_path: Path) -> None:
+        cfg = load(self._cfg(tmp_path, "  resync_on_unsplit: true\n"))
+        assert cfg.livesplit.resync_on_unsplit is True
+
+    @pytest.mark.parametrize("bad", ["1", '"yes"', "0"])
+    def test_non_bool_rejected(self, tmp_path: Path, bad: str) -> None:
+        with pytest.raises(
+            ConfigError, match="livesplit.resync_on_unsplit must be a boolean"
+        ):
+            load(self._cfg(tmp_path, f"  resync_on_unsplit: {bad}\n"))

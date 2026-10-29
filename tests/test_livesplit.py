@@ -196,6 +196,75 @@ class TestQueries:
         client.close()
 
 
+class TestSplitIndex:
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            (b"3\r\n", 3),
+            (b"0\n", 0),
+            (b"-1\n", -1),
+            (b"-\n", None),
+            (b"[Error] Unknown command\n", None),
+            (b"abc\n", None),
+            (b"\r\n", None),
+        ],
+    )
+    def test_reply_parsing(
+        self, server: RestartableServer, reply: bytes, expected: int | None
+    ) -> None:
+        server.auto_reply = reply
+        client = make_client(server.port)
+        assert client.get_split_index() == expected
+        client.close()
+
+    def test_wire_bytes(self, server: RestartableServer) -> None:
+        server.auto_reply = b"1\n"
+        client = make_client(server.port)
+        assert client.get_split_index() == 1
+        assert server.received_bytes() == b"getsplitindex\n"
+        client.close()
+
+    def test_silent_server_returns_none(self, server: RestartableServer) -> None:
+        server.auto_reply = None
+        client = make_client(server.port)
+        assert client.get_split_index() is None
+        client.close()
+
+    def test_dropped_socket_returns_none(self, server: RestartableServer) -> None:
+        server.auto_reply = b"2\n"
+        client = make_client(server.port, reconnect_seconds=60.0)
+        assert client.get_split_index() == 2
+        server.stop()
+        assert client.get_split_index() is None
+        assert client.connected is False
+
+    def test_unreachable_returns_none(self) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        addr = cast("tuple[str, int]", listener.getsockname())
+        listener.close()
+        client = make_client(addr[1])
+        assert client.get_split_index() is None
+        assert client.connected is False
+
+    def test_reconnects_after_server_returns(self, server: RestartableServer) -> None:
+        server.auto_reply = b"4\n"
+        client = make_client(server.port, reconnect_seconds=0.05)
+        assert client.get_split_index() == 4
+        server.stop()
+        client.teardown()
+        assert client.get_split_index() is None
+        server.auto_reply = b"5\n"
+        server.start()
+        deadline = time.monotonic() + 2.0
+        got: int | None = None
+        while time.monotonic() < deadline and got is None:
+            got = client.get_split_index()
+            time.sleep(0.02)
+        assert got == 5
+        client.close()
+
+
 class TestResilience:
     def test_unreachable_server_returns_false_quickly(self) -> None:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

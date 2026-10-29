@@ -229,6 +229,16 @@ Behavior:
 - If LiveSplit is down, detection continues unaffected: the status line shows
   `DISCONNECTED (retrying)` and reconnects at `livesplit.reconnect_seconds`
   cadence once the server returns.
+- **Unsplit rollback (opt-in).** Set `livesplit.resync_on_unsplit: true` and, if a
+  split fires wrongly and you press Unsplit, the detector notices via LiveSplit's
+  split index (polled every ~2 s, confirmed over 2 polls, ignored for 3 s after a
+  fired split) and rolls back to that split. It only watches after a Running poll
+  has shown LiveSplit in step with the detector, so splits fired while your timer
+  was not running do not trigger a false rollback. Limits: undoing the final split
+  is not supported; a timer reset and restart that lands at index 0 mid-run looks
+  like an undo and rolls the detector back to 0; skip split and the GUI are not
+  handled; it can conflict with OCR index resync. Verify `getsplitindex` replies
+  against your LiveSplit first.
 - Wire protocol facts (for debugging): commands are newline-terminated
   (`split\n`); `split` produces no response; `ping` answers `pong`.
 

@@ -97,6 +97,10 @@ livesplit:
   timeout_seconds: 0.25
   # Reconnect attempt interval (seconds) while LiveSplit Server is down.
   reconnect_seconds: 5.0
+  # Roll the detector back when you press Unsplit in LiveSplit (detected via
+  # `getsplitindex`; the detector never writes LiveSplit state). Verify that
+  # `getsplitindex` replies against your LiveSplit version first.
+  resync_on_unsplit: false
 
 # record:
 #   # Path template for recordings. Variables: {game}, {date}, {time},

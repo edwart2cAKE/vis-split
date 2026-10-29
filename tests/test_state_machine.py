@@ -579,3 +579,163 @@ class TestOcrResync:
         result = OcrResult(text="", confidence=50.0, split_index=None, frame_number=0)
         machine._ocr_latest = result
         assert machine.ocr_text is None
+
+
+# ---------------------------------------------------------------------------
+# Rollback after a user Unsplit in LiveSplit
+# ---------------------------------------------------------------------------
+
+
+def three_splits() -> tuple[Split, ...]:
+    return (
+        Split(id=1, name="A", color="black", threshold=0.95),
+        Split(id=2, name="B", color="black", threshold=0.95),
+        Split(id=3, name="C", color="black", threshold=0.95),
+    )
+
+
+def fire_first(machine: TransitionDetector) -> None:
+    """Drive a required_frames=1 machine through one split (to TRANSITION)."""
+    assert machine.feed_result(res(1.0)) is not None
+
+
+class TestRollback:
+    def test_expected_ls_index_per_state(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        assert machine.expected_ls_index == 0  # NORMAL
+        fire_first(machine)
+        assert machine.state is State.TRANSITION
+        assert machine.expected_ls_index == 1
+        machine.feed_result(res(1.0))
+        assert machine.state is State.WAITING_FOR_RESET
+        assert machine.expected_ls_index == 1
+        machine.feed_result(res(0.0))
+        assert machine.state is State.NORMAL
+        assert machine.expected_ls_index == 1
+
+    def test_expected_ls_index_done_and_last_transition(self) -> None:
+        machine = TransitionDetector(make_config(required_frames=1))
+        events_of(machine, [1.0, 1.0, 0.0])  # split 1 settled, index 1
+        fire_first(machine)  # last split fires
+        assert machine.state is State.TRANSITION
+        assert machine.expected_ls_index == 2
+        machine.feed_result(res(1.0))
+        assert machine.state is State.DONE
+        assert machine.expected_ls_index == 2
+
+    def test_expected_ls_index_start_transition_settle(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        machine = TransitionDetector(
+            make_config(required_frames=1, start_transition=start)
+        )
+        assert machine.expected_ls_index == 0
+        machine.feed_result(res(1.0))
+        assert machine.state is State.TRANSITION
+        assert machine.expected_ls_index == 0
+        machine.feed_result(res(1.0))
+        assert machine.state is State.WAITING_FOR_RESET
+        assert machine.expected_ls_index == 0
+
+    def test_rollback_from_normal(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        events_of(machine, [1.0, 1.0, 0.0])  # index 1, NORMAL
+        assert machine.rollback_to(0) is True
+        assert machine.state is State.NORMAL
+        assert machine.current_split_index == 0
+
+    def test_rollback_from_waiting_color_still_lit(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        events_of(machine, [1.0, 1.0])  # WAITING_FOR_RESET, lit
+        assert machine.rollback_to(0) is True
+        assert machine.state is State.WAITING_FOR_RESET
+        assert events_of(machine, [1.0, 1.0, 0.9]) == []
+        assert machine.state is State.WAITING_FOR_RESET
+        assert machine.feed_result(res(0.79)) is None
+        assert machine.state is State.NORMAL
+        assert machine.current_split_index == 0  # no advance
+
+    def test_rollback_from_done_victory_lit(self) -> None:
+        machine = TransitionDetector(make_config(required_frames=1))
+        events_of(machine, [1.0, 1.0, 0.0, 1.0, 1.0])
+        assert machine.finished
+        assert machine.rollback_to(1) is True
+        assert not machine.finished
+        assert machine.current_split_index == 1
+        assert events_of(machine, [1.0] * 10) == []
+        machine.feed_result(res(0.0))
+        assert machine.state is State.NORMAL
+        assert machine.current_split_index == 1
+        assert len(events_of(machine, [1.0])) == 1
+
+    def test_rejected_in_transition(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        events_of(machine, [1.0, 1.0, 0.0])
+        fire_first(machine)
+        assert machine.state is State.TRANSITION
+        assert machine.rollback_to(0) is False
+        assert machine.state is State.TRANSITION
+
+    def test_rejected_in_waiting_for_start(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        machine = TransitionDetector(make_config(start_transition=start))
+        assert machine.state is State.WAITING_FOR_START
+        assert machine.rollback_to(0) is False
+
+    def test_rejected_out_of_range_and_not_below_expected(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        events_of(machine, [1.0, 1.0, 0.0])  # expected 1
+        assert machine.rollback_to(-1) is False
+        assert machine.rollback_to(3) is False
+        assert machine.rollback_to(1) is False  # == expected
+        assert machine.rollback_to(2) is False  # > expected
+        assert machine.current_split_index == 1
+
+    def test_boundary_ratio_at_reset_threshold_does_not_clear(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        events_of(machine, [1.0, 1.0])
+        assert machine.rollback_to(0)
+        machine.feed_result(res(0.80))
+        assert machine.state is State.WAITING_FOR_RESET
+        machine.feed_result(res(0.7999))
+        assert machine.state is State.NORMAL
+
+    def test_debounce_restarts_at_zero(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=3))
+        events_of(machine, [1.0, 1.0, 1.0, 1.0, 0.0])  # split 1 settled
+        assert events_of(machine, [1.0, 1.0]) == []  # streak 2 toward split 2
+        assert machine.rollback_to(0)
+        assert machine.state is State.NORMAL
+        assert events_of(machine, [1.0, 1.0]) == []
+        assert len(events_of(machine, [1.0])) == 1
+
+    def test_continuous_lit_color_fires_at_most_one_split(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=1))
+        fired = events_of(machine, [1.0] * 3)
+        assert machine.rollback_to(0)
+        fired += events_of(machine, [1.0] * 20)
+        assert len(fired) == 1
+
+    def test_clearing_frame_does_not_feed_next_streak(self) -> None:
+        machine = TransitionDetector(make_config(splits=three_splits(), required_frames=2))
+        events_of(machine, [1.0, 1.0, 1.0])  # split 1 fired, waiting
+        assert machine.rollback_to(0)
+        machine.feed_result(res(0.0))  # clears
+        assert machine.state is State.NORMAL
+        assert events_of(machine, [1.0]) == []  # streak 1 of 2
+        assert len(events_of(machine, [1.0])) == 1
+
+    def test_first_split_undo_with_start_transition(self) -> None:
+        start = StartTransition(name="Start", color="white", threshold=0.95)
+        machine = TransitionDetector(
+            make_config(splits=three_splits(), required_frames=1, start_transition=start)
+        )
+        events_of(machine, [1.0, 1.0, 0.0])  # gate fired + settled
+        assert machine.state is State.NORMAL
+        events_of(machine, [1.0, 1.0])  # split A fired, waiting; LS index 1
+        assert machine.expected_ls_index == 1
+        assert machine.rollback_to(0) is True
+        assert machine.current_split_index == 0
+        assert machine.feed_result(res(0.0)) is None
+        assert machine.state is State.NORMAL
+        assert machine.current_split_index == 0
+        assert len(events_of(machine, [1.0])) == 1

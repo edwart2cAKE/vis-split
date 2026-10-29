@@ -12,7 +12,8 @@ blocks longer than ``timeout_seconds``. A dead or hung server degrades to
 ``split() is False`` while detection continues untouched (spec section 17);
 reconnect attempts are rate-limited to one per ``reconnect_seconds``.
 
-Query commands (``getcurrenttimerphase``, ``getcurrentsplitname``) follow
+Query commands (``getcurrenttimerphase``, ``getcurrentsplitname``,
+``getsplitindex``) follow
 the same contract and return ``None`` on any transport failure. They are
 meant for low-rate polling (a couple of seconds apart), not per-frame use:
 each call can stall up to ``timeout_seconds`` waiting for the response line.
@@ -20,6 +21,7 @@ each call can stall up to ``timeout_seconds`` waiting for the response line.
 
 from __future__ import annotations
 
+import re
 import select
 import socket
 import time
@@ -74,6 +76,10 @@ class LiveSplitClient:
         if sock is None:
             return None
         try:
+            # A previous query that timed out may have its reply arrive late;
+            # discard any unread bytes so this query cannot read a stale line
+            # (which would leave every later reply off by one).
+            self._drain(sock)
             sock.sendall(command.encode("ascii") + b"\n")
             deadline = time.monotonic() + self._timeout
             data = b""
@@ -102,6 +108,22 @@ class LiveSplitClient:
     def get_current_split_name(self) -> str | None:
         """Name of the segment LiveSplit is currently timing ('' when done)."""
         return self.query("getcurrentsplitname")
+
+    def get_split_index(self) -> int | None:
+        """LiveSplit's current split index (-1 before the run starts).
+
+        None on a failed query, a ``-`` / ``[Error]`` reply, or any
+        non-integer response.
+        """
+        line = self.query("getsplitindex")
+        if line is None:
+            return None
+        text = line.strip()
+        # Optional sign plus ASCII digits only (int() alone would accept
+        # underscores and non-ASCII digits).
+        if re.fullmatch(r"[+-]?[0-9]+", text) is None:
+            return None
+        return int(text)
 
     def ping(self) -> bool:
         """Round-trip liveness probe — used by tooling, not the hot loop."""

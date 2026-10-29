@@ -100,6 +100,7 @@ class LiveSplit:
     port: int
     timeout_seconds: float = 0.25
     reconnect_seconds: float = 5.0
+    resync_on_unsplit: bool = False
 
 
 @dataclass(frozen=True)
@@ -509,6 +510,10 @@ def _parse_livesplit(value: object, label: str) -> LiveSplit:
                 f"{label}: livesplit.reconnect_seconds must be greater than 0"
             )
 
+    resync_value = data.get("resync_on_unsplit")
+    if resync_value is not None and not isinstance(resync_value, bool):
+        raise ConfigError(f"{label}: livesplit.resync_on_unsplit must be a boolean")
+
     return LiveSplit(
         host=host,
         port=port,
@@ -516,6 +521,7 @@ def _parse_livesplit(value: object, label: str) -> LiveSplit:
         reconnect_seconds=(
             float(reconnect_value) if reconnect_value is not None else 5.0
         ),
+        resync_on_unsplit=resync_value is True,
     )
 
 
