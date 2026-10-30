@@ -130,3 +130,107 @@ livesplit:
 #   convert_to: "mp4"
 #   # Keep recording for this many seconds after the last split fires.
 #   post_run_seconds: 3.0
+
+# ocr:
+#   # Read-only screen evidence: reads an on-screen split number and compares it
+#   # with the detector's index. Never changes detector or LiveSplit state.
+#   # Needs the system `tesseract` binary (`--check` shows availability).
+#   enabled: true
+#   # verify_only (default): read-only. With an `undo:` section below it is the DRY RUN.
+#   # undo: ACTIVE go-then-undo. Needs `--live --livesplit`; sends LiveSplit `unsplit` (and,
+#   #   for the late-HUD recovery, `split`). Opt-in per game; without --livesplit it degrades
+#   #   to the dry run. Requires non-empty patterns; an absent `undo:` section = all defaults.
+#   mode: verify_only          # verify_only | undo
+#   roi: {x: 0.0, y: 0.0, width: 0.10, height: 0.10}   # normalized, like the main roi
+#   engine:
+#     backend: auto            # auto | tesseract_cli | tesserocr (tesserocr: not implemented yet)
+#     language: eng
+#     psm: 7                   # recommended (single line). 10 = single-character mode: read
+#                              # 1-20 fine on one tested font but font/size dependent, not
+#                              # guaranteed. 8/13 gave low confidence (38-72, mostly < 60 gate)
+#     whitelist: "0123456789"  # recommended for digit-only HUDs
+#     min_confidence: 60.0
+#     timeout_seconds: 2.0
+#   patterns:
+#     # Anchored: tesseract words are joined with spaces ("1 2" would otherwise read as 1).
+#     "^\\s*(\\d+)\\s*$": null  # whole text is one number = 1-based split id
+#   poll_interval_frames: 3    # submit cadence only (latest-wins slot)
+#   # Cap on tesseract reads/s, (0, 30]. Cadence = min(submit, this, tesseract ~0.1 s).
+#   # Default 4 => verdict (3 reads) ~0.75 s, about half of a niced core (measured +~50%); raise to confirm faster.
+#   max_reads_per_second: 4.0
+#   preprocess:
+#     scale: 4                 # 1..8 upscale before OCR
+#     blur: 3                  # odd, 0 = none
+#     threshold: otsu          # otsu | none | color
+#     # threshold: color masks ONLY the text colour (ignores backgrounds, black bars, Otsu
+#     # polarity). Needs text_color. Example: black side bars + gray play area + white digit
+#     # with roi {x: 0.105, y: 0.0, width: 0.03, height: 0.055}:
+#     # text_color: [255, 255, 255]   # RGB 0-255
+#     # text_tolerance: 40            # 0-255, per channel, inclusive
+#     # Low bitrate/quality (offline, ONE frame/font; README has the numbers): for white text on a gray HUD
+#     # use preprocess: {threshold: color, text_color: [255, 255, 255], text_tolerance: 70, blur: 0, scale: 4}
+#     # (tolerance ~ half the text/background contrast; 100 is too loose). Needs >= 640x360, NVENC >= ~200 kbps
+#     # / x264 >= ~400 kbps, no blur filters on the sidecar scene. Misreads can be confident: see undo.min_confidence.
+#     pad: 10                  # white border in px (0..50)
+#   filter:
+#     consensus_frames: 3      # distinct agreeing readings needed
+#     jump_consensus_frames: 6 # when the screen index is not the detector's or +1
+#     max_age_seconds: 0.5     # drop readings older than this
+#     # min_confidence: 60.0   # defaults to engine.min_confidence
+#   # "Go then undo" judge: the colour detector still splits on the transition (a death looks
+#   # identical); the judge checks whether the HUD number advanced. With mode: verify_only it
+#   # only LOGS ("would UNDO", nothing sent); with mode: undo (+ --livesplit) it sends `unsplit`
+#   # and rolls the detector back. Requires non-empty patterns. The HUD changes AFTER the
+#   # colour event with a game-dependent lag. TUNING: run mode: verify_only + this section
+#   # first, watch the "HUD advanced +X.XXs after split" lines and set settle_seconds ~1.5x
+#   # the largest one. A genuine transition whose HUD updates later than settle + post_clear +
+#   # confirm WILL be wrongly undone (recover_late_hud below then re-splits, recorded late).
+#   # mode: undo REQUIRES livesplit.follow_timer: true (config error otherwise; the dry run does
+#   # not): if a command's effect cannot be
+#   # confirmed (EOF after the write, no reply) the executor re-reads LiveSplit's index for up
+#   # to 5 s and then WARNs; follow_timer (required) repairs what is left (an unsplit applied later than
+#   # the ~0.3 s re-check window, or a genuine colour fire during a pending re-check, are only
+#   # repaired by follow_timer). The frame loop blocks once per death: up to 4 x timeout_seconds
+#   # for a normal undo (~1 s at 0.25 s), ~1.8 s for an ambiguous one; a 120 fps feed backs up
+#   # meanwhile (possible packet loss / stale latency).
+#   # LiveSplit's command ordering (unsplit vs the next index reply) is unverified.
+#   # Limits: an unresolved offset (two deaths < ~4.2 s apart, recovery
+#   # off or HUD later than recover_seconds, late-applied unsplit follow_timer has not yet repaired) makes
+#   # require_baseline skip undo for the rest of the run until fixed/reset; with recover_late_hud
+#   # false LiveSplit stays one split BEHIND the game (fix manually). Latency at 640x360/30 fps:
+#   # undo ~4.1-4.2 s after the fire at defaults, ~1.7 s with settle 1.0/post_clear 0.5/0.6 s
+#   # confirm (false-undo ceiling: HUD lag ~1.7 s). A recovered split is recorded late by ~the HUD
+#   # lag. A death on the LAST level is not undone unless apply_to_last_split: true (below). Validated offline only (no real OBS/LiveSplit).
+#   undo:
+#     settle_seconds: 3.0      # ignore "screen is one behind" this long after the split fired
+#     confirm_reads: 3         # then this many consecutive distinct trusted reads...
+#     confirm_seconds: 1.0     # ...spanning at least this long => "would UNDO"
+#     window_seconds: 10.0     # give up (expired) this long after the fire; > settle + confirm
+#     min_confidence: 80       # undo-specific, never below engine.min_confidence. Use >= 85 for mode: undo
+#                              # (degraded frames can give confident wrong digits; correct reads were ~96-97)
+#     require_baseline: true   # needs a pre-split reading that agreed with the detector
+#     baseline_seconds: 2.0    # ...within this many seconds before the fire
+#     post_clear_seconds: 1.0  # reads count only this long after the transition CLEARS (settle is from the FIRE)
+#     # confirm_reads 1 needs confirm_seconds > 0. Reads are capped by max_reads_per_second (4/s):
+#     # defaults need ~5 reads / ~1-1.25 s. window_seconds should exceed longest lit time + settle + confirm.
+#     # Unknown keys under undo are silently ignored (a typo keeps the default). The ocr roi must cover
+#     # ALL digits of the highest level number with ~2 px margin. text_color is ignored unless threshold: color.
+#     # Opt-in last-split coverage: enable when the HUD level number DISAPPEARS after the finish (and
+#     # stays after a death on the last level). Needs mode: undo to send; verify_only logs only. A false
+#     # undo of a genuine finish has NO recovery, a HUD lingering longer than settle + extra + post_clear +
+#     # confirm is wrongly undone, and the process holds its exit at DONE while the window is open (up to
+#     # window_seconds). window_seconds must exceed settle + extra + confirm. Offline-validated only.
+#     # After any last-split unsplit attempt the non-loop exit waits for a fresh LiveSplit phase
+#     # (poll_seconds + timeout_seconds after the send; bounded; skipped if LiveSplit is unreachable).
+#     # Needs ANCHORED ocr.patterns (^...$; startup/--check WARN otherwise). The judge clocks settle/confirm at
+#     # processing time, so a long main-loop stall after DONE can age a really-lingering HUD past the guard.
+#     # With --loop the rearm is held while this window is open: a new run starting within window_seconds
+#     # while the HUD never disappeared has its first split ignored (machine still DONE).
+#     apply_to_last_split: false
+#     last_split_extra_settle_seconds: 2.0   # added to settle_seconds for last-split windows only
+#     # mode: undo only. After a verified undo, if the HUD shows the NEXT level within
+#     # recover_seconds (the number was just late) and no new colour fire happened, send
+#     # `split` again. The re-split time is recorded late by the HUD lag. The next-level reads
+#     # must also span confirm_seconds; a systematic misread (8 read as 9) is the residual risk.
+#     recover_late_hud: true
+#     recover_seconds: 10.0

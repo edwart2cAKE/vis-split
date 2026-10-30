@@ -23,7 +23,7 @@ Design details: see `Project Overview.md`; dev rules: see `AGENTS.md`.
 - Linux (developed on Arch/Wayland) with **ffmpeg** on PATH (`sudo pacman -S ffmpeg`)
 - [uv](https://docs.astral.sh/uv/)
 - OBS Studio (for live capture)
-- No other required Python dependencies beyond what `uv sync` installs (OpenCV, NumPy, PyYAML); optional extras: `gui` (PySide6) and `ocr` (tesserocr)
+- No other required Python dependencies beyond what `uv sync` installs (OpenCV, NumPy, PyYAML); optional extras: `gui` (PySide6); the optional `ocr:` screen evidence needs the system `tesseract` binary (`pacman -S tesseract tesseract-data-eng`), no Python binding
 
 ## Setup
 
@@ -208,6 +208,38 @@ uv run python -m autosplitter.main --config configs/your-game.yaml \
 - If the splitter is started while the filter is already on, connection can take
   >10 s (OBS retries slowly). Start the splitter first, or re-toggle the filter.
 
+### OCR under low bitrate / low quality
+
+Measured OFFLINE on ONE real game frame (`example.png`, level digit '8', OCR ROI `x=0.105 y=0 w=0.03 h=0.055`, psm 7, digit
+whitelist, `threshold: color` white text, tesseract 5.5.4). The H.264 clips are that frame with a moving box and light noise
+elsewhere (30 fps, GOP 30, CBR, frames sampled across 3 s including the I-frame). "correct" = reads `8`; ">=80" = also above the
+undo confidence floor. These are one frame, one font and one synthetic motion pattern, NOT your real footage; thin glyphs
+('1', '7') behave differently (an earlier measurement read a '7' at confidence 79 at 640 wide and 13 at 1080p in another font).
+
+- **Real encoders at 640x360** (correct / 20): NVENC (`h264_nvenc` p4 ll, `bf=0`): >= 200 kbps 20/20 (all >=80); 100 kbps 20/20
+  (18 >=80); requested 50 kbps (actually ~118 kbps) 17/20 (10 >=80); at 480x270 100 kbps 20/20, requested 50k (~110k) 17/20.
+  libx264 (`veryfast zerolatency`): >= 400 kbps 20/20; 200 kbps 18/20; 100 kbps 10/20 (640x360) / 14/20 (480x270); requested
+  50 kbps (actually ~90 kbps) 0/20. Rate control overshoots tiny requested bitrates (50k gave 88-118 kbps). A static HUD in a
+  mostly static frame is cheap to encode; a busy game scene may need more bitrate than this clip.
+- **Whole-frame image damage, then ROI crop** (single frame, defaults tol 40 / blur 3 / scale 4): JPEG quality as low as 10 reads
+  fine at 1920x1080, 960x540 and 640x360 (quality 5 breaks 640x360); at 480x270 JPEG quality <= 20 fails; 320x180 does not read at all
+  (the digit is ~10 px, even clean). Blur is the biggest enemy: at 640x360 a 5x5 blur kills the read (3x3 is fine), at 480x270 even 3x3
+  kills it, at 960x540 up to 5x5 is fine. Gaussian noise sigma 8-16 is harmless at >= 480x270; sigma 24+ degrades at <= 640x360 (the
+  colour threshold is more noise-sensitive than Otsu at low resolution, but Otsu fails when the crop touches the black side bar).
+- **Tuning sweep** (hardest 14 cases, 62 frames; correct AND >= 80): `text_tolerance` 40 (default) with blur 3: 17-18/62;
+  `text_tolerance` 70 with `blur: 0`, `scale: 4`: 36/62 (best); tolerance 70 blur 3: 29/62; scale 6 is no better than 4; tolerance 100 is
+  too loose (12-17/62, it starts matching the mid-gray background); Otsu 19/62. For white text on a gray HUD use `threshold: color`,
+  `text_tolerance` about half the contrast between text and background colour (70 here: text 255, background ~130), `blur: 0`, `scale: 4`.
+- **Misreads matter for `mode: undo`.** With the tuned settings 8 of 62 reads were wrong digits (confidence 62-70, mostly 5/1/0) and
+  3 of those were >= 80 (identical static frames of the single worst case, 480x270 x264 100 kbps, a '0' at 80.8). With the defaults
+  (tol 40, blur 3) 27 of 62 were wrong, none >= 80. Consensus does NOT protect against a static systematic misread (identical frames
+  give identical reads). So for `mode: undo` / recovery keep `undo.min_confidence` >= 85 (correct reads here were ~96-97), prefer
+  >= 640x360 and a sidecar bitrate in the solid ranges above, and run the dry run first while watching the logged confidences.
+- **Practical guidance:** >= 640x360; NVENC >= ~200 kbps (100k workable), x264 >= ~400 kbps; no soft/blurry downscaling in the OBS
+  output (use a sharp downscale such as Lanczos/Bicubic; no blur filters on the sidecar scene); keep the ROI tight around the digits
+  (including the black side bar breaks Otsu polarity; the colour threshold is immune) with ~2 px margin per side at low resolution;
+  check `--check` and a few `--detect` / `--live` runs and read the `ocr=` confidence before trusting undo.
+
 ## Connecting LiveSplit
 
 The detector talks to LiveSplit's built-in TCP command server running under
@@ -237,7 +269,7 @@ Behavior:
   was not running do not trigger a false rollback. Limits: undoing the final split
   is not supported; a timer reset and restart that lands at index 0 mid-run looks
   like an undo and rolls the detector back to 0; skip split and the GUI are not
-  handled; it can conflict with OCR index resync. Verify `getsplitindex` replies
+  handled; it does not interact with OCR (read-only). Verify `getsplitindex` replies
   against your LiveSplit first.
 - **Follow the LiveSplit timer (opt-in).** `livesplit.follow_timer: true`
   (implies Unsplit rollback; `livesplit.poll_seconds` sets the poll interval, default 2 s)
@@ -261,7 +293,7 @@ Behavior:
   that flashes after you resume but before the next poll is skipped by the freeze and not
   repaired (LiveSplit ends up behind; split manually and the detector follows), so keep
   `poll_seconds` small. If LiveSplit stops answering for 3 polls while paused, the detector
-  unfreezes with a notice. OCR resync still runs while frozen; Ended also lifts the freeze. If
+  unfreezes with a notice. OCR evidence still runs while frozen; Ended also lifts the freeze. If
   LiveSplit's segment count differs from your config's splits, skip-forward, manual
   start and run end following are disabled with a warning. Older LiveSplit servers may
   not support `getsplitcount`; then the check is skipped with a notice. After a followed
@@ -409,7 +441,64 @@ All tunables live in your game config (e.g., `configs/start-powerless.yaml`):
 - `splits` — ordered transitions referencing defined colors, each with its own match threshold
 - `livesplit` — host/port for the TCP client
 - `start_transition` (optional) — color gate that starts the run and, with `auto_start_timer`, the LiveSplit timer
-- `ocr` (optional, needs the `ocr` extra) — split-name OCR used to resync the detector
+- `ocr` (optional, needs the `tesseract` binary) — read-only screen evidence: reads an on-screen split number and
+  compares it with the detector's index (`mode: verify_only` (default): nothing is changed or sent to
+  LiveSplit; `mode: undo` is the opt-in executor described below). Keys: `roi`, `engine.{language,psm,min_confidence,backend,whitelist,timeout_seconds}`,
+  `patterns`, `poll_interval_frames`, `enabled`, `preprocess.{scale,blur,threshold,pad,text_color,text_tolerance}`,
+  `filter.{consensus_frames,jump_consensus_frames,max_age_seconds,min_confidence}` (see `configs/template.yaml`).
+  `preprocess.threshold: color` (with `text_color: [r, g, b]` and `text_tolerance`, default 40) masks only the HUD text
+  colour, ignoring backgrounds, bars and polarity. Example for a game with black side bars, a gray play area and a
+  white level digit: `roi: {x: 0.105, y: 0.0, width: 0.03, height: 0.055}`, `preprocess: {threshold: color,
+  text_color: [255, 255, 255]}`, `patterns: {"^\\s*(\\d+)\\s*$": null}`. A loose ROI, or one covering the black bar, reads
+  nothing with `otsu` because Otsu takes the minority pixel class as the text (polarity flips).
+  Optional `undo:` section (`settle_seconds`, `confirm_reads`, `confirm_seconds`, `window_seconds`, `min_confidence`,
+  `require_baseline`, `baseline_seconds`, `apply_to_last_split`, `last_split_extra_settle_seconds`) is a DRY-RUN tuning tool for
+  "go then undo": the colour detector still splits on the transition (a death looks identical to a level change);
+  the judge logs `OCR: HUD advanced +X.XXs after split` when the HUD number advanced and
+  `OCR: would UNDO split "<name>" (...) - dry run: nothing sent` when it stayed behind. Nothing is sent to LiveSplit.
+  The HUD updates after the colour event with a game-dependent lag: set `settle_seconds` to ~1.5x the largest
+  `HUD advanced +X.XXs` you observe; a genuine transition whose HUD updates later than settle+confirm would be wrongly
+  undone in `mode: undo` (see below).
+  **`ocr.mode: undo` (opt-in, per game, needs `--live --livesplit`)**: after the judge confirms a death, the splitter
+  sends LiveSplit `unsplit`, verifies the new split index and rolls the detector back (log: `OCR: UNDO "<name>" confirmed
+  ...`, `LiveSplit: UNSPLIT sent -> index N (verified)`). Without `--livesplit` it prints a WARN and runs as the dry
+  run. If LiveSplit is unreachable/paused/not in step, or the unsplit has no effect, it skips (logged) and never
+  rolls the detector back on its own. `undo.recover_late_hud` (default true, `recover_seconds` default 10): if after
+  an undo the HUD shows the next level within `recover_seconds` (the number was just late), the splitter sends `split`
+  again; that split is recorded LATE by the HUD lag. This is an explicit exception to "the detector never touches
+  timer state" and is CLI-only (the GUI does not run it). If a command's effect cannot be confirmed (EOF after the
+  write, no answer to the verify query, applied a moment late) the splitter re-reads LiveSplit's split index
+  (twice immediately, ~0.3 s of blocking, then every 0.5 s for up to 5 s) and only moves the detector to match what
+  LiveSplit reports; at the deadline it prints a loud WARN. `mode: undo` REQUIRES
+  `livesplit.follow_timer: true` (config error otherwise; the dry run does not need it) so follow_timer's rollback/skip
+  rules repair whatever the re-checks cannot settle. How LiveSplit orders an `unsplit` against the next index query is
+  unverified against a real server. The frame loop blocks once per death: a normal undo up to 4 x
+  `livesplit.timeout_seconds` (~1 s at the 0.25 s default with a connected-but-silent server), an ambiguous one about
+  1.8 s (5 queries + send + 0.275 s of re-check sleeps); on a 120 fps SRT/UDP feed the capture pipe backs up for that
+  long (possible packet loss / stale latency). Residual: an `unsplit` that LiveSplit applies later than the ~0.3 s
+  re-check window leaves the detector one ahead until `follow_timer` repairs it, and a genuine colour fire while a
+  reconcile is pending drops the reconcile (LiveSplit may be one behind). Recovery additionally needs the next-level HUD reads to span `confirm_seconds`; a systematic
+  misread (8 read as 9) is the residual risk. Not handled: multi-step undo; the last split unless `apply_to_last_split` is on (below).
+  Last split (`ocr.undo.apply_to_last_split: true`, default false; opt-in): enable it when your game's HUD level number DISAPPEARS after the finish and keeps showing the level after a death on the last level. The judge then waits `settle_seconds` + `last_split_extra_settle_seconds` (default 2.0) + `post_clear_seconds` + the confirm reads; if the number is gone for the confirm reads the run is FINISHED (`OCR: HUD gone after the last split — run finished, no undo`), otherwise the split is undone (LiveSplit `Ended` -> `Running` at the last segment; `mode: undo` only, `follow_timer` required). A false undo of a genuine finish has NO automatic recovery (no late-HUD recovery for the last split), and a HUD that lingers after a real finish longer than that guard (~7 s with defaults) is wrongly undone. The process holds its exit at DONE while the window is open (up to `window_seconds`; a genuine finish exits about the guard time after the finish) and `--loop` does not rearm meanwhile. Validated offline only; real LiveSplit Ended -> Running via `unsplit` is unverified. Run the dry run (`verify_only`) first and watch the `would UNDO` / `HUD gone` lines. After ANY last-split `unsplit` attempt (even one reported as having no effect or unconfirmed) the non-loop DONE exit also waits for a LiveSplit phase polled at least `poll_seconds + timeout_seconds` AFTER the send, because LiveSplit may apply the unsplit later than the ~0.3 s re-checks and the cached phase may still read Ended; if that fresh phase is Running the process keeps running and follow_timer's rollback repairs the detector. The wait is bounded (6 x poll_seconds + 4 x timeout_seconds + 3 s) and skipped when LiveSplit is unreachable, so a hung server still lets the process exit; apply_to_last_split off, dry runs and FINISHED (nothing sent) exit as before.
+  Honest notes: (a) the judge measures settle/post_clear/confirm with the clock at PROCESSING time, not the reading's capture time; if the main loop stalls for seconds after DONE (LiveSplit queries timing out, a backlogged pipe) a HUD that really lingers ~1.5 s of video time can age past the ~6 s guard and be wrongly undone — low in practice (confirm_seconds needs wall-clock time between reads and the worker keeps only the latest frame), but it is a second path from a genuine finish to a false undo besides the documented lingering-HUD limit; (b) ANCHORED `ocr.patterns` (`^...$`, e.g. `"^\\s*(\\d+)\\s*$"`) are required in practice for `apply_to_last_split`: end-card/menu text containing a number would otherwise count as a trusted HUD read (startup and `--check` print a non-fatal `WARN: ocr.patterns "<regex>" is not anchored` for `mode: undo` or `apply_to_last_split`); (c) with `--loop` the quiet-frames rearm is held while a last-split window is open (up to `window_seconds`): if the HUD never disappears and a new run starts within that time, its first split is ignored while the machine is still in DONE.
+  Validator-measured limits: (a) after any UNRESOLVED offset between detector and game (two deaths closer than the ~4.2 s verdict latency, recovery disabled or a HUD later than `recover_seconds`, a late-applied unsplit follow_timer has not yet repaired, a hung-server UNCONFIRMED) `require_baseline` makes undo inert for the rest of the run (`no baseline` on every later split) until fixed manually or by reset; (b) with `recover_late_hud: false` (or a HUD later than `recover_seconds`) LiveSplit and the detector stay one split BEHIND the game and you must fix it manually; the log only says `OCR: screen says split N ..., detector at M (no action)`; (c) at 640x360/30 fps the undo comes ~4.1-4.2 s after the fire at defaults (settle 3.0 / post_clear 1.0 / 3 reads over 1.0 s) and ~1.7 s with the fast set (1.0 / 0.5 / 0.6 s), whose false-undo ceiling is a HUD lag of ~1.7 s; the recovery split follows ~0.9 s after the HUD first reads the new level and is recorded late by roughly the HUD lag (the unsplit+split pair does NOT restore the original timestamp); (d) the frame loop blocks ~1.0 s at a verdict against a connected-but-silent server (100-140 frames of backlog at 120 fps, no loss at 30 fps); (e) a death on the LAST level is not undone unless `apply_to_last_split: true`; (f) validated only offline/synthetic: no real OBS, no real LiveSplit/Wine (command ordering and apply latency unverified), no 1080p, and `--loop` with undo, the GUI and `--overlay` were not exercised; (g) the stale-reply hazard was only exercised in its benign shape. Run the dry run first; `mode: undo` requires `livesplit.follow_timer: true`.
+  **Tuning**: run `mode: verify_only` with the `undo:` section first (dry run), watch the `OCR: HUD advanced
+  +X.XXs after split` lags and set `settle_seconds` to ~1.5x the largest; a genuine transition whose HUD updates later
+  than settle + post_clear + confirm WILL be wrongly undone (and then recovered by the re-split). Measured with the
+  defaults: a 2.8 s HUD lag was fine, a 4.5 s lag produced a false undo ~4.2 s after the fire. The OCR ROI must cover all
+  digits of the highest level (width 0.05 reads two digits at 640x360; 0.03 clips them).
+  Notes: `settle_seconds` is measured from the FIRE, `post_clear_seconds` (default 1.0) from the advancing CLEAR; a D-1 read counts only when both have elapsed (earlier reads are ignored, they do not break the streak). `window_seconds` (from the fire) should exceed the longest transition lit time + settle + confirm. `confirm_reads: 1` with `confirm_seconds: 0` is rejected. Reads are capped by `ocr.max_reads_per_second` (default 4/s), so the default confirm_reads 3 + confirm_seconds 1.0 needs ~5 reads / ~1.0-1.25 s in practice. The baseline AGREE must come from the same epoch (a reset/rollback/advance/clear bumps it). Non-finite (NaN/inf) confidences are untrusted, and huge ints give a ConfigError ('must be a number'). The OCR ROI must cover ALL digits of the highest level number with ~2 px margin (at 640x360 the strict example ROI clips the '1' of '15'; measured read '5'; with 2 px margin it reads '15'). Unknown keys in `ocr.undo` are silently ignored (a typo keeps the default). `text_color`/`text_tolerance` are ignored unless `threshold: color`. The cancel log line reads `undo window cancelled: state changed`; `--check` shows the effective confidence floor max(undo, engine, filter min_confidence).
+  `--check` prints `ocr backend: tesseract_cli OK (5.5.4)` or `ocr backend: UNAVAILABLE (<reason>)`; `--live`
+  shows `ocr=N=` (agrees), `ocr=N!` (mismatch, with an `OCR:` event line), `ocr=?`, `ocr=n/a` or `ocr=err`.
+  `poll_interval_frames` is only the submit cadence; `max_reads_per_second` (default 4, range (0, 30]) caps the
+  read rate. Read cadence = min(submit cadence, max_reads_per_second, tesseract latency ~0.1 s); at the default a
+  verdict (3 consensus reads) takes ~0.75 s and costs about half of a niced core (measured +~50%); raise it for faster confirmation. Behavior change: existing `ocr:` configs now really spawn
+  tesseract processes in live runs (about one niced core). The `ocr` extra in `pyproject.toml` (tesserocr) is
+  unused for now; only the `tesseract` binary is needed. Tips: use `psm: 7` (single line) for numbers and labels; psm 10 (single
+  character) read multi-digit numbers fine in testing on one font (conf 87-97) but that is font/size dependent and
+  not guaranteed; psm 8/13 gave low confidence (38-72, mostly under the 60 gate), keep a digit whitelist,
+  and anchor patterns (`"^\\s*(\\d+)\\s*$"`) because words are joined with spaces ("1 2" would read as split 1) and
+  low-contrast or look-alike glyphs can misread (letters "IO" read as "10").
 - `record` (optional) — splitter-side recording; planned for removal (see `AGENTS.md`)
 
 Invalid config fails with precise errors such as
@@ -420,7 +509,7 @@ Invalid config fails with precise errors such as
 ```bash
 uv run pytest -v                        # tests
 uvx ruff check .                        # lint
-uv run basedpyright src tests           # typecheck (target 0 warnings; ~199 pre-existing, see AGENTS.md)
+uv run basedpyright src tests           # typecheck (0 errors required; 184 pre-existing warnings, new code adds none, see AGENTS.md)
 uv run python -m autosplitter.main --check   # validate config, print summary
 ```
 

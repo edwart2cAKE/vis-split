@@ -28,19 +28,53 @@ roi:
   height: 0.50
 
 ocr:
-  # Level number is a white digit in the top-left corner of the gameplay area.
-  # ROI: top-left 10%x10% of the frame.
+  # Level number: white digit(s) in the upper-left of the GAME AREA (the frame
+  # has black side bars; the game area starts at x~0.102). The ROI must be
+  # tight: a crop that touches the black bar edge breaks Otsu polarity, and it
+  # must cover ALL digits of the highest level (15 -> two digits, ~0.05 wide).
+  # Verified on example.png: this ROI reads "8" at confidence ~97 at 1920x1080
+  # and 640x360. Do not use the old 0,0,0.10,0.10 region: it is the black bar.
   roi:
-    x: 0.0
+    x: 0.105
     y: 0.0
-    width: 0.10
-    height: 0.10
+    width: 0.05
+    height: 0.055
   engine:
-    psm: 10    # single character
+    psm: 7                     # single line: best confidence for 1-2 digits
+    whitelist: "0123456789"
     min_confidence: 60.0
   patterns:
-    "(\\d+)": null   # extract digit as 1-based split id
+    "^\\s*(\\d+)\\s*$": null   # 1-based level number -> split index
+  preprocess:
+    threshold: color           # white text on mid-gray; immune to the black bar
+    text_color: [255, 255, 255]
+    text_tolerance: 70         # ~half the text/background contrast (measured best)
+    blur: 0
+    scale: 4
   poll_interval_frames: 3
+  # DRY RUN: only logs `OCR: screen says …` / `would UNDO …` / `HUD advanced +X.XXs`,
+  # `HUD gone after the last split …`, and sends nothing to LiveSplit. Watch those
+  # lines over several real runs (genuine levels, deaths, and real finishes) first.
+  # To actually undo deaths (the death transition is identical to the level
+  # transition) set `mode: undo` AND livesplit.follow_timer: true. NOTE: with
+  # apply_to_last_split: true below, `mode: undo` also un-ends a run whose HUD
+  # number lingers after a real finish for longer than ~6 s, and there is NO
+  # automatic recovery for that case (finish by hand; follow_timer follows it).
+  mode: verify_only
+  undo:
+    # Start Powerless: the HUD number updates 1-2 s after the transition and
+    # disappears when the game is finished; the shortest level is longer than
+    # the ~4 s undo delay. settle 3.0 s = 1.5x the largest observed HUD lag.
+    settle_seconds: 3.0
+    post_clear_seconds: 1.0
+    confirm_reads: 3
+    confirm_seconds: 1.0
+    window_seconds: 10.0
+    min_confidence: 85         # misreads under compression can reach ~80
+    require_baseline: true
+    baseline_seconds: 2.0
+    apply_to_last_split: true  # HUD vanishes on a real finish => a lingering HUD means a death
+    last_split_extra_settle_seconds: 2.0   # extra delay on the last split (no recovery)
 
 detection:
   # Debounce is frame-counted: 3 frames at 60 fps ~= 50 ms of flicker immunity.

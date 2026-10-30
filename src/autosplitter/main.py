@@ -23,9 +23,38 @@ import numpy as np
 from .capture import MpegTsFrameSource
 from .config import DEFAULT_ROI, Config, ConfigError, Record, Split, load
 from .detection import DetectionResult, StartEvent, State, TransitionDetector
+from .detection.evidence import EvidenceKind
+from .detection.ocr_detector import describe_backend
+from .detection.undo_judge import UndoVerdict, VerdictKind
 from .diagnostics import annotate
-from .livesplit import Action, Decision, LiveSplitClient, TimerFollower, UndoWatch
+from .livesplit import (
+    Action,
+    Decision,
+    LiveSplitClient,
+    TimerFollower,
+    UndoExecutor,
+    UndoWatch,
+)
 from .record import resolve_path
+
+
+def _pattern_warnings(cfg: Config) -> list[str]:
+    """Unanchored ``ocr.patterns`` while undo can act (mode undo / last-split coverage).
+
+    Conservative textual check: a pattern must start with ``^`` and end with ``$``.
+    """
+    ocr = cfg.ocr
+    if ocr is None or not (
+        ocr.mode == "undo" or (ocr.undo is not None and ocr.undo.apply_to_last_split)
+    ):
+        return []
+    return [
+        f'WARN: ocr.patterns "{p.regex}" is not anchored (^...$): end-card/menu text'
+        + " containing a level number would count as a trusted HUD read; anchor it,"
+        + ' e.g. "^\\s*(\\d+)\\s*$"'
+        for p in ocr.patterns
+        if not (p.regex.startswith("^") and p.regex.endswith("$"))
+    ]
 
 
 def _print_summary(label: str, cfg: Config) -> None:
@@ -73,12 +102,109 @@ def _print_summary(label: str, cfg: Config) -> None:
             f"  ocr      : roi x={ocr.roi.x:g} y={ocr.roi.y:g} w={ocr.roi.width:g} h={ocr.roi.height:g}"
             + f" engine={ocr.engine.language} psm={ocr.engine.psm}"
             + f" poll={ocr.poll_interval_frames} patterns={len(ocr.patterns)}"
+            + f" mode={ocr.mode}"
         )
+        usable, backend_text = describe_backend(ocr) if ocr.enabled else (False, "")
+        if ocr.undo is not None:
+            u = ocr.undo
+            if not ocr.enabled:
+                mode_text = "OFF (ocr disabled; no undo will happen)"
+            elif not usable:
+                mode_text = "OFF (ocr backend unavailable; no undo will happen)"
+            elif ocr.mode == "undo":
+                mode_text = "ACTIVE (will send unsplit)"
+            else:
+                mode_text = "DRY RUN (nothing is sent)"
+            print(
+                f"  ocr undo : {mode_text} settle={u.settle_seconds:g}s"
+                + f" reads={u.confirm_reads} confirm={u.confirm_seconds:g}s"
+                + f" post_clear={u.post_clear_seconds:g}s window={u.window_seconds:g}s"
+                + f" min_conf={max(u.min_confidence, ocr.engine.min_confidence, ocr.filter.min_confidence):g}"
+                + f" baseline={'required' if u.require_baseline else 'off'}"
+                + (
+                    f" last-split=ON(+{u.last_split_extra_settle_seconds:g}s settle,"
+                    + f" exit held up to {u.window_seconds:g}s)"
+                    if u.apply_to_last_split
+                    else ""
+                )
+                + (
+                    f" recover={u.recover_seconds:g}s"
+                    if ocr.mode == "undo" and u.recover_late_hud
+                    else ""
+                )
+            )
+            if ocr.mode == "undo" and ocr.enabled and usable:
+                print("    (needs --live --livesplit; without --livesplit it runs as a dry run)")
+        for warning in _pattern_warnings(cfg):
+            print("  " + warning)
+        if not ocr.enabled:
+            print("  ocr backend: disabled (ocr.enabled: false)")
+        else:
+            print(
+                f"  ocr backend: {backend_text}"
+                if usable
+                else f"  ocr backend: UNAVAILABLE ({backend_text})"
+            )
 
 
 def _load_image(image_path: str) -> np.ndarray | None:
     data = np.fromfile(Path(image_path), dtype=np.uint8)
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _ocr_column(machine: TransitionDetector, unavailable: bool) -> str:
+    """HUD cell: ocr=N= agree, ocr=N! mismatch, ocr=? none yet, n/a, err."""
+    if unavailable:
+        return "ocr=n/a"
+    if machine.ocr_worker_status == "failed":
+        return "ocr=err"
+    if machine.undo_pending:
+        return "undo?"
+    ev = machine.ocr_evidence
+    if ev.kind is EvidenceKind.AGREE and ev.screen_idx is not None:
+        return f"ocr={ev.screen_idx + 1}="
+    if ev.kind is EvidenceKind.MISMATCH and ev.screen_idx is not None:
+        return f"ocr={ev.screen_idx + 1}!"
+    return "ocr=?"
+
+
+def _undo_line(v: UndoVerdict, cfg: Config, active: bool = False) -> str:
+    """One log line for a judge verdict (1-based numbers; dry run unless ``active``)."""
+    k = v.split_index
+    name = cfg.splits[k].name if 0 <= k < len(cfg.splits) else "?"
+    screen = f"{v.screen_idx + 1}" if v.screen_idx is not None else "?"
+    if v.kind is VerdictKind.GENUINE:
+        return (
+            f"OCR: HUD advanced +{v.elapsed:.2f}s after split"
+            + " (tune undo.settle_seconds above this)"
+        )
+    if v.kind is VerdictKind.UNDO and active:
+        return (
+            f'OCR: UNDO "{name}" confirmed (screen {k + 1}, detector {k + 2},'
+            + f" {v.reads} reads over {v.elapsed:.1f}s)"
+        )
+    if v.kind is VerdictKind.UNDO:
+        return (
+            f'OCR: would UNDO split "{name}" (screen {k + 1}, detector {k + 2},'
+            + f" fired {v.elapsed:.1f}s ago, {v.reads} reads)"
+            + " - dry run: nothing sent"
+        )
+    if v.kind is VerdictKind.WARN:
+        return (
+            f"OCR: undo judge: screen says split {screen} after split {k + 1} fired"
+            + (
+                f" (expected {k + 1}); ignored, no action"
+                if k + 1 >= len(cfg.splits)  # last split: there is no split k+2
+                else f" (expected {k + 1} or {k + 2}); ignored, no action"
+            )
+        )
+    if v.kind is VerdictKind.FINISHED:
+        return "OCR: HUD gone after the last split — run finished, no undo"
+    if v.kind is VerdictKind.CANCELLED:
+        return "OCR: undo window cancelled: state changed"
+    if v.kind is VerdictKind.EXPIRED:
+        return "OCR: undo window expired (never confirmed)"
+    return "OCR: no baseline (OCR unreadable pre-split); undo skipped"
 
 
 def _frame_ratio(machine: TransitionDetector, frame: np.ndarray) -> float:
@@ -96,30 +222,33 @@ def _detect_images(cfg: Config, image_paths: list[str]) -> int:
     """Feed a sequence of prerecorded frames through the state machine and
     print the per-frame timeline (Phase 3 demo)."""
     machine = TransitionDetector(cfg)
-    name_width = max((len(Path(p).name) for p in image_paths), default=5)
+    try:
+        name_width = max((len(Path(p).name) for p in image_paths), default=5)
 
-    print(f"Frames: {len(image_paths)}  (required_frames={cfg.detection.required_frames}, "
-          + f"reset_threshold={cfg.detection.reset_threshold:.2f})")
-    print(f"{'#':>4}  {'Image':<{name_width}}  Match     State               Event")
-    for index, path in enumerate(image_paths, start=1):
-        img = _load_image(path)
-        if img is None:
-            print(f"INVALID IMAGE: {path}", file=sys.stderr)
-            return 1
+        print(f"Frames: {len(image_paths)}  (required_frames={cfg.detection.required_frames}, "
+              + f"reset_threshold={cfg.detection.reset_threshold:.2f})")
+        print(f"{'#':>4}  {'Image':<{name_width}}  Match     State               Event")
+        for index, path in enumerate(image_paths, start=1):
+            img = _load_image(path)
+            if img is None:
+                print(f"INVALID IMAGE: {path}", file=sys.stderr)
+                return 1
 
-        ratio = _frame_ratio(machine, img)
-        event = machine.feed_result(res_from_ratio(ratio))
-        if isinstance(event, StartEvent):
-            event_text = f"START \"{event.name}\""
-        elif event is not None:
-            event_text = f"SPLIT id={event.split_id} \"{event.name}\""
-        else:
-            event_text = "-"
-        print(
-            f"{index:>4}  {Path(path).name:<{name_width}}  {ratio * 100:6.2f}%   "
-            + f"{machine.state.name:<19} {event_text}"
-        )
-    return 0
+            ratio = _frame_ratio(machine, img)
+            event = machine.feed_result(res_from_ratio(ratio))
+            if isinstance(event, StartEvent):
+                event_text = f"START \"{event.name}\""
+            elif event is not None:
+                event_text = f"SPLIT id={event.split_id} \"{event.name}\""
+            else:
+                event_text = "-"
+            print(
+                f"{index:>4}  {Path(path).name:<{name_width}}  {ratio * 100:6.2f}%   "
+                + f"{machine.state.name:<19} {event_text}"
+            )
+        return 0
+    finally:
+        machine.shutdown_ocr()
 
 
 def _probe_image(cfg: Config, image_path: str) -> int:
@@ -240,6 +369,8 @@ class _FollowPoller:
         self._count_checked: bool = False
         self._skip_enabled: bool = True
         self._prev_index: int | None = None
+        # Monotonic time of the last successful phase query (fresh-phase checks).
+        self.phase_at: float = 0.0
 
     def disarm(self) -> None:
         self._follower.disarm()
@@ -310,6 +441,7 @@ class _FollowPoller:
         phase = client.get_current_timer_phase()
         if phase is None:
             return self._abort(machine, None, cached_name, suppress)
+        self.phase_at = time.monotonic()
         if phase == "NotRunning":
             self._failures = 0
             # No index/name queries, but observe still runs so RESET can fire.
@@ -431,6 +563,82 @@ def _apply_decision(
     return f'LiveSplit: {verb} "{name}" (index {index})'
 
 
+def _livesplit_scope(cfg: Config) -> str:
+    """What the splitter may send to LiveSplit, for the startup line."""
+    if cfg.ocr is not None and cfg.ocr.mode == "undo":
+        return "splits + unsplit (ocr.mode undo)"
+    return "splits only"
+
+
+def _wait_fresh_phase(
+    executor: UndoExecutor,
+    poller: _FollowPoller,
+    connected: bool,
+    now: float,
+    limit: float,
+    settle: float = 0.0,
+) -> tuple[bool, bool]:
+    """(hold the DONE exit, nudge a LiveSplit poll) after a last-split unsplit.
+
+    The cached phase may still read Ended although LiveSplit applied our (late)
+    unsplit; exiting on it would abandon a Running timer. Wait for a phase
+    polled AFTER the attempt; bounded by ``limit`` seconds, and never when
+    LiveSplit is unreachable (today's behaviour).
+    """
+    if not executor.last_unsplit_sent or not connected:
+        return False, False
+    t0 = executor.last_unsplit_time
+    ready = t0 + settle  # LiveSplit may apply the unsplit late: only a phase read
+    if now - t0 > limit or poller.phase_at > ready:  # after this counts as fresh
+        return False, False
+    return True, now >= ready
+
+
+def _print_lines(lines: tuple[str, ...]) -> None:
+    """Executor outcome lines; the first gets the same ``\\n`` prefix as verdict
+    lines so it never glues onto the status line."""
+    print("\n" + lines[0])
+    for text in lines[1:]:
+        print(text)
+
+
+def _undo_service(
+    client: LiveSplitClient | None,
+    machine: TransitionDetector,
+    cfg: Config,
+    active: bool,
+    executor: UndoExecutor,
+) -> bool:
+    """Per-frame OCR undo service: log judge verdicts and, when ``active``
+    (``ocr.mode: undo`` with --livesplit), run the executor and the late-HUD
+    recovery. True when the detector moved (the caller restarts the 3 s undo
+    hold-off and drops its stale sync bookkeeping)."""
+    moved = False
+    while (verdict := machine.take_undo_event()) is not None:
+        print("\n" + _undo_line(verdict, cfg, active))
+        if (
+            active
+            and client is not None
+            and verdict.kind is VerdictKind.UNDO
+            and verdict.screen_idx is not None
+        ):
+            outcome = executor.attempt(
+                client, machine, verdict.screen_idx, time.monotonic()
+            )
+            _print_lines(outcome.lines)
+            moved = moved or outcome.changed
+    if active and client is not None:
+        stepped = executor.pending_step(client, machine)
+        if stepped is not None:
+            _print_lines(stepped.lines)
+            moved = moved or stepped.changed
+        recovery = executor.recover(client, machine, time.monotonic())
+        if recovery is not None:
+            _print_lines(recovery.lines)
+            moved = moved or recovery.changed
+    return moved
+
+
 def _run_live(
     cfg: Config,
     source_override: str | None,
@@ -511,10 +719,11 @@ def _run_live(
         active = cfg.splits[0]
         print(f"Waiting for: {active.id}. \"{active.name}\" (threshold {active.threshold * 100:.1f}%)")
 
-    machine = TransitionDetector(cfg)
-    first_detector = machine.first_detector
-    quiet_needed = machine.quiet_frames_needed
-    quiet_frames = 0
+    ocr_wanted = cfg.ocr is not None and cfg.ocr.enabled
+    # Latch for OCR mismatch lines: one per distinct (screen, detector) pair,
+    # cleared when the screen and detector agree again.
+    ocr_warned: tuple[int, int] | None = None
+    quiet_frames: int = 0
     frame_index = 0
     stamps: deque[float] = deque(maxlen=60)
     unavailable = False
@@ -534,7 +743,7 @@ def _run_live(
             timeout_seconds=ls.timeout_seconds,
             reconnect_seconds=ls.reconnect_seconds,
         )
-        print(f"LiveSplit: {ls.host}:{ls.port} (splits only)")
+        print(f"LiveSplit: {ls.host}:{ls.port} ({_livesplit_scope(cfg)})")
 
     # Low-rate LiveSplit sync polling (wall-clock gated, not per-frame):
     # each query can stall up to livesplit.timeout_seconds, so poll both
@@ -549,17 +758,27 @@ def _run_live(
     # Unsplit rollback (opt-in): confirm across polls; suppress while a split
     # went undelivered (LiveSplit is legitimately behind the detector).
     undo_watch = UndoWatch()
-    undo_suppress = False
+    undo_suppress: bool = False
     # follow_timer replaces the legacy undo path: rollback plus skip-forward.
     follow_enabled = cfg.livesplit.follow_timer
     done_nudged = False
     follow_poller = _FollowPoller(
         len(cfg.splits), loop_enabled, cfg.livesplit.follow_pause
     )
-    if cfg.ocr is not None and (cfg.livesplit.resync_on_unsplit or follow_enabled):
+    # ocr.mode is captured once: a hot config reload cannot flip live behaviour.
+    undo_mode = cfg.ocr is not None and cfg.ocr.mode == "undo"
+    undo_exec = UndoExecutor()
+    fresh_settle = cfg.livesplit.poll_seconds + cfg.livesplit.timeout_seconds
+    # Upper bound of the post-unsplit exit wait: a few polls plus query timeouts.
+    fresh_limit = (
+        cfg.livesplit.poll_seconds * 6 + cfg.livesplit.timeout_seconds * 4 + 3.0
+    )
+    if ocr_wanted and not (undo_mode and livesplit_enabled) and (
+        cfg.livesplit.resync_on_unsplit or follow_enabled
+    ):
         print(
-            "WARN: ocr and livesplit.resync_on_unsplit/follow_timer are both enabled; OCR"
-            + " resync and unsplit rollback can disagree and flip-flop the index"
+            "NOTE: ocr is read-only (verify_only) and never changes the index;"
+            + " it only reports disagreement with the detector"
         )
 
     # Overlay setup — force xcb on pure Wayland (OpenCV Qt backend has no Wayland plugin).
@@ -580,11 +799,11 @@ def _run_live(
     steady_base_index: int | None = None
     steady_base_time: float = 0.0
 
-    has_ocr = cfg.ocr is not None
+    has_ocr = ocr_wanted
     if loop_enabled or max_frames is not None or has_ocr:
         hdr = f"  {'frame':>6}  {'fps':>5}  {'match':>7}  {'state':<17}"
         if has_ocr:
-            hdr += f"  {'ocr':>6}"
+            hdr += f"  {'ocr':>7}"
         if livesplit_enabled:
             hdr += f"  {'ls':>5}"
         print(hdr)
@@ -593,6 +812,43 @@ def _run_live(
     config_poll_interval = config_poll_interval if config_path is not None else 0.0
     last_mtime = config_path.stat().st_mtime if config_path is not None else 0.0
     last_config_check = 0.0
+
+    # Built immediately before the try whose finally shuts the OCR worker
+    # down, so no exit path between creation and cleanup can leak its thread.
+    machine: TransitionDetector = TransitionDetector(cfg)
+    ocr_unavailable = ocr_wanted and machine.ocr_worker_status is None
+    if ocr_unavailable:
+        print(
+            f"WARN: ocr configured but backend unavailable: {machine.ocr_status};"
+            + " continuing without screen evidence"
+        )
+    undo_ready = machine.undo_judge_active and not ocr_unavailable
+    if undo_mode and not ocr_wanted:
+        print("WARN: ocr.mode undo but ocr.enabled is false; no undo will happen")
+    elif undo_mode and not undo_ready and not ocr_unavailable:
+        print("WARN: ocr.mode undo but the undo judge is inactive; no undo will happen")
+    for warning in _pattern_warnings(cfg):
+        print(warning)
+    if undo_mode and undo_ready and not livesplit_enabled:
+        print("WARN: ocr.mode undo needs --livesplit; running as verify_only (dry run)")
+    undo_active = undo_mode and undo_ready and livesplit_enabled and client is not None
+    undo_dry_run = undo_ready and not undo_active
+    if undo_active:
+        print(
+            "OCR undo: ACTIVE - a split whose HUD number did not advance is undone"
+            + " with LiveSplit 'unsplit' (and re-split if the HUD was only late)"
+        )
+    elif undo_dry_run:
+        print(
+            "OCR undo judge: DRY RUN - logs what it would undo; nothing is sent"
+            + (
+                " to LiveSplit (dry run: ocr.mode undo needs --livesplit)"
+                if undo_mode
+                else " to LiveSplit (ocr.mode is verify_only)"
+            )
+        )
+    first_detector = machine.first_detector
+    quiet_needed = machine.quiet_frames_needed
 
     try:
         while max_frames is None or frame_index < max_frames:
@@ -638,7 +894,16 @@ def _run_live(
                     or not client.connected
                     or (ls_phase is not None and ls_phase != "Running")
                 )
-                if timer_ready and livesplit_done:
+                # A last-split undo window (apply_to_last_split) or a pending
+                # executor reconcile holds the exit; bounded by window_seconds.
+                fresh_hold, fresh_poll = _wait_fresh_phase(
+                    undo_exec, follow_poller, client is not None and client.connected,
+                    now, fresh_limit, fresh_settle,
+                )
+                if fresh_poll:
+                    ls_next_poll = 0.0
+                undo_hold = machine.undo_pending or undo_exec.pending or fresh_hold
+                if timer_ready and livesplit_done and not undo_hold:
                     print()
                     break
                 # Periodic status during grace period
@@ -647,6 +912,11 @@ def _run_live(
                     ls_status = f"  ls={ls_phase}" if ls_phase is not None else ""
                     print(f"\rDONE — recording {remaining:.0f}s remaining{ls_status}  ", end="", flush=True)
                     _done_grace_print = now
+            if _done_time is not None and not machine.finished:
+                # The detector left DONE (last-split undo): a later DONE starts fresh.
+                _done_time = None
+                _done_grace_print = None
+                undo_exec.last_unsplit_sent = False
             stamps.append(now)
             frame_index += 1
             unavailable = False
@@ -659,6 +929,31 @@ def _run_live(
             else:
                 event = machine.feed_result(res_from_ratio(ratio))
             machine.check_ocr_resync(frame, frame_index)
+            undo_moved = False
+            if has_ocr and not ocr_unavailable:
+                ev = machine.ocr_evidence
+                if ev.kind is EvidenceKind.AGREE:
+                    ocr_warned = None
+                elif ev.kind is EvidenceKind.MISMATCH and ev.screen_idx is not None:
+                    pair = (ev.screen_idx, machine.current_split_index)
+                    # The undo judge owns the "screen is one behind" case
+                    # while its window is open (it logs instead).
+                    judge_owns = (
+                        machine.undo_pending
+                        and ev.screen_idx == machine.current_split_index - 1
+                    )
+                    if pair != ocr_warned and not judge_owns:
+                        ocr_warned = pair
+                        print(
+                            f'\nOCR: screen says split {ev.screen_idx + 1} ("{ev.text}",'
+                            + f" conf {ev.confidence:.0f}), detector at"
+                            + f" {machine.current_split_index + 1}"
+                            + (" (no action)" if undo_active else " (verify_only; no action)")
+                        )
+                if (undo_dry_run or undo_active) and _undo_service(
+                    client, machine, cfg, undo_active, undo_exec
+                ):
+                    undo_moved = True
             # follow_timer: poll LiveSplit right away once the run completes
             # so the non-loop exit does not wait out poll_seconds.
             if follow_enabled:
@@ -672,7 +967,9 @@ def _run_live(
             # --loop rearm watch: once finished, track the NEXT run's first
             # split color (or start color if start_transition configured);
             # a sustained quiet stretch rewinds the machine.
-            if loop_enabled and machine.finished:
+            if loop_enabled and machine.finished and not (
+                machine.undo_pending or undo_exec.pending
+            ):
                 if cfg.start_transition is not None and machine.start_detector is not None:
                     ratio = machine.start_detector.detect(frame).ratio
                     waiting_for = cfg.start_transition.name
@@ -692,6 +989,13 @@ def _run_live(
                         follow_poller.disarm()
                         undo_suppress = False
                         print(f"\nRUN COMPLETE — rearmed, watching for {waiting_for}")
+
+            if undo_moved:
+                # The executor moved the detector: drop stale sync bookkeeping
+                # (the 3 s undo hold-off starts below with last_split_time).
+                undo_suppress = False
+                sync_warned = None
+                quiet_frames = 0
 
             if client is not None:
                 connected_now = client.poll_connection()
@@ -719,6 +1023,7 @@ def _run_live(
                                     + " LiveSplit catches up"
                                 )
                             undo_suppress = True
+                if event is not None or undo_moved:
                     last_split_time = time.monotonic()
 
                 if now >= ls_next_poll:
@@ -853,9 +1158,7 @@ def _run_live(
                 + f"  {machine.state.name:<17}"
             )
             if has_ocr:
-                ocr_txt = machine.ocr_text
-                ocr_col = f"ocr={ocr_txt}" if ocr_txt is not None else ""
-                line += f"  {ocr_col:>6}"
+                line += f"  {_ocr_column(machine, ocr_unavailable):>7}"
             if loop_enabled and machine.finished:
                 line += f"  quiet {quiet_frames}/{quiet_needed}"
             if follow_poller.paused:
@@ -958,7 +1261,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "with --live: forward split events to LiveSplit Server"
-            " (splits only unless the config sets start_transition.auto_start_timer);"
+            " (splits only unless the config sets start_transition.auto_start_timer or"
+            " ocr.mode: undo, which may also send unsplit);"
             " also polls LiveSplit every ~2s for timer phase + current split"
             " and warns on desync"
         ),
