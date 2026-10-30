@@ -36,7 +36,7 @@ from autosplitter.detection.element_reader import (
 from autosplitter.detection.undo_judge import UndoJudge, VerdictKind
 
 ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE = ROOT / "example.png"
+EXAMPLE = ROOT / "tests" / "fixtures" / "example_hud.png"
 
 
 class Clk:
@@ -659,11 +659,11 @@ def test_color_large_scale_blur_pad_extremes() -> None:
 
 
 # --------------------------------------------------------------------------
-# real tesseract on the repo-root example.png
+# real tesseract on tests/fixtures/example_hud.png
 # --------------------------------------------------------------------------
 
 needs_tess = pytest.mark.skipif(
-    shutil.which("tesseract") is None or not EXAMPLE.exists(), reason="tesseract/example.png missing"
+    shutil.which("tesseract") is None or not EXAMPLE.exists(), reason="tesseract/tests/fixtures/example_hud.png missing"
 )
 
 

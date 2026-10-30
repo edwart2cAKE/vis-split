@@ -112,8 +112,8 @@ livesplit:
   # ignored); a reset made while disconnected from LiveSplit is not seen.
   follow_timer: false
   # Freeze detection while LiveSplit is Paused (requires follow_timer). Off by
-  # default: 'split is ignored while Paused' is inferred from LiveSplit source and
-  # not live-tested; pause once, trigger a detector split and observe first. Up to
+  # default: 'split is ignored while Paused' was confirmed once against a real
+  # LiveSplit (scripts/livesplit_probe.py A11); re-check on your setup first. Up to
   # one poll interval of detection can run before the pause is noticed (the undo
   # rule then repairs a split LiveSplit ignored). Never sends pause/resume.
   # The same lag applies after resuming (a flash before the next poll is missed and
@@ -193,7 +193,7 @@ livesplit:
 #   # repaired by follow_timer). The frame loop blocks once per death: up to 4 x timeout_seconds
 #   # for a normal undo (~1 s at 0.25 s), ~1.8 s for an ambiguous one; a 120 fps feed backs up
 #   # meanwhile (possible packet loss / stale latency).
-#   # LiveSplit's command ordering (unsplit vs the next index reply) is unverified.
+#   # LiveSplit's command ordering (unsplit vs the next index reply) was checked once on a real LiveSplit (immediate).
 #   # Limits: an unresolved offset (two deaths < ~4.2 s apart, recovery
 #   # off or HUD later than recover_seconds, late-applied unsplit follow_timer has not yet repaired) makes
 #   # require_baseline skip undo for the rest of the run until fixed/reset; with recover_late_hud

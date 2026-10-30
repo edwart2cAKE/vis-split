@@ -90,7 +90,7 @@ def test_start_powerless_ocr_block_parses() -> None:
     # configs/start-powerless.yaml was re-tuned (tight ROI, colour threshold);
     # these pins follow the file's current values.
     assert [(p.regex, p.split_index) for p in o.patterns] == [("^\\s*(\\d+)\\s*$", None)]
-    assert (o.roi.x, o.roi.y, o.roi.width, o.roi.height) == (0.105, 0.0, 0.05, 0.055)
+    assert (o.roi.x, o.roi.y, o.roi.width, o.roi.height) == (0.1469, 0.1472, 0.0177, 0.0231)
     assert o.enabled
 
 

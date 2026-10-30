@@ -24,7 +24,8 @@ Safety rules:
   LiveSplit demonstrably reports; at the deadline a loud WARN recommends
   ``livesplit.follow_timer`` (REQUIRED for ocr.mode undo; its rollback/skip rules repair any residual disagreement).
 - LiveSplit's real command ordering (is an ``unsplit`` applied before the next
-  ``getsplitindex`` reply?) is UNVERIFIED against a real server; the re-checks
+  ``getsplitindex`` reply?) was checked once against a real server (immediate; see
+  docs/LIVESPLIT_VALIDATION.md); other versions may differ, so the re-checks
   exist precisely so the executor is correct either way.
 
 Frame-loop stall (once per death, never per frame), each query/send bounded by

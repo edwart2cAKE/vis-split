@@ -369,10 +369,10 @@ def test_color_reads_digit_where_otsu_fails_on_black_bar() -> None:
     assert col == "8"
 
 
-EXAMPLE = Path(__file__).resolve().parent.parent / "example.png"
+EXAMPLE = Path(__file__).resolve().parent / "fixtures" / "example_hud.png"
 
 
-@pytest.mark.skipif(not EXAMPLE.exists(), reason="example.png not present")
+@pytest.mark.skipif(not EXAMPLE.exists(), reason="tests/fixtures/example_hud.png not present")
 @needs_tesseract
 @pytest.mark.parametrize("size", [(1920, 1080), (640, 360)])
 def test_example_png_level_digit(size: tuple[int, int]) -> None:

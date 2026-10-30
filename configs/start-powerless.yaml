@@ -1,5 +1,5 @@
 capture:
-  fps: 120
+  fps: 60                          # OBS Common FPS Value of the sidecar stream (60)
   # OBS sidecar output (Recording -> Custom Output (FFmpeg), container mpegts).
   # Pin the sidecar's Output (scaled) Resolution to width x height below,
   # regardless of canvas size (works for both 1920x1080 and 2560x1440 setups).
@@ -28,17 +28,19 @@ roi:
   height: 0.50
 
 ocr:
-  # Level number: white digit(s) in the upper-left of the GAME AREA (the frame
-  # has black side bars; the game area starts at x~0.102). The ROI must be
-  # tight: a crop that touches the black bar edge breaks Otsu polarity, and it
-  # must cover ALL digits of the highest level (15 -> two digits, ~0.05 wide).
-  # Verified on example.png: this ROI reads "8" at confidence ~97 at 1920x1080
-  # and 640x360. Do not use the old 0,0,0.10,0.10 region: it is the black bar.
+  # Level number: white digit(s) at the top-left of the GAME AREA. This ROI is for the
+  # BROWSER-WINDOW capture (game embedded in a web page, 1920x1080): the digit is only
+  # ~18 px tall at x 285..312, y 162..180 px (two digits reach x~312), ROI = those
+  # pixels + ~3 px margin. Measured on a real 7.5 min recording: reads every level 1..15
+  # at confidence 93-97 at 1920x1080 and at 640x360 (87/90 frames >= 85), including with
+  # 400 kbps NVENC. For a FULLSCREEN game capture (tests/fixtures/example_hud.png) the
+  # digit is elsewhere: x=0.105 y=0.0 w=0.05 h=0.055. Keep the ROI tight and covering ALL
+  # digits of the highest level (15 -> two digits).
   roi:
-    x: 0.105
-    y: 0.0
-    width: 0.05
-    height: 0.055
+    x: 0.1469
+    y: 0.1472
+    width: 0.0177
+    height: 0.0231
   engine:
     psm: 7                     # single line: best confidence for 1-2 digits
     whitelist: "0123456789"
@@ -77,9 +79,16 @@ ocr:
     last_split_extra_settle_seconds: 2.0   # extra delay on the last split (no recovery)
 
 detection:
-  # Debounce is frame-counted: 3 frames at 60 fps ~= 50 ms of flicker immunity.
-  required_frames: 3
-  reset_threshold: 0.80
+  # Debounce is frame-counted (60 fps stream). A DEATH and a level completion fire the same
+  # dark wipe, but the wipe is longer for a completion. Measured on 8 real recordings (3 days;
+  # 86 completions incl. finishes, 23 deaths), frames at 60 fps with the match threshold 0.75:
+  #   completions 17-21 frames, deaths 11-12 frames, start gate 17-18 frames.
+  # required_frames 15 sits between them (3 above the longest death, 2 below the shortest
+  # completion), so deaths never fire a split. Every split AND the start gate therefore use
+  # threshold 0.75 (at the old 0.90 the two overlap). Splits fire ~0.2 s later than before
+  # (constant offset). On a 120 fps stream double required_frames (30).
+  required_frames: 15
+  reset_threshold: 0.70
   # --loop only: after DONE, rearm once the NEXT run's first split color
   # stays below reset_threshold for this many seconds.
   restart_quiet_seconds: 3.0
@@ -91,7 +100,7 @@ start_transition:
   # Tune with: uv run python -m autosplitter.main --config configs/start-powerless.yaml --probe screenshot.png
   name: "Run Start"
   color: transition_color
-  threshold: 0.85
+  threshold: 0.75
   # Optional: auto-start LiveSplit timer when start detected
   auto_start_timer: true
 
@@ -119,77 +128,77 @@ splits:
   - id: 1
     name: "Level 1"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 2
     name: "Level 2"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 3
     name: "Level 3"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 4
     name: "Level 4"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 5
     name: "Level 5"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 6
     name: "Level 6"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 7
     name: "Level 7"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 8
     name: "Level 8"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 9
     name: "Level 9"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 10
     name: "Level 10"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 11
     name: "Level 11"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 12
     name: "Level 12"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 13
     name: "Level 13"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 14
     name: "Level 14"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 15
     name: "Level 15 (Finish)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
 livesplit:
   host: "127.0.0.1"
