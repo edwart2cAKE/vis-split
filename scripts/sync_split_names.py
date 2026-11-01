@@ -87,7 +87,7 @@ def update_config_text(text: str, names: list[str]) -> tuple[str, list[tuple[str
 
     if len(items) != len(names):
         raise SystemExit(
-            f"config has {len(items)} splits but the .lss has {len(names)} segments; "
+            f"config has {len(items)} splits but the .lss has {len(names)} segments; " +
             "nothing written"
         )
     missing = [n + 1 for n, j in enumerate(name_lines) if j is None]

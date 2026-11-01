@@ -26,7 +26,7 @@ class OverlayConfig:
 
 
 def _derive_overlay_cfg(frame: np.ndarray, cfg: Config) -> OverlayConfig:
-    h, w = frame.shape[:2]
+    h, w = cast(tuple[int, int], frame.shape[:2])
     roi = cfg.roi
     roi_x = int(roi.x * w)
     roi_y = int(roi.y * h)

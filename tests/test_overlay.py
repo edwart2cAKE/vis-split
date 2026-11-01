@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false, reportAny=false
 """Tests for diagnostics overlay."""
 
 import os

@@ -50,11 +50,11 @@ class MainWindow(QMainWindow):
         self, config_path: str, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
-        self._config_path = config_path
-        self._pipeline_running = False
-        self._livesplit_enabled = False
-        self._loop_enabled = False
-        self._record_enabled = False
+        self._config_path: str = config_path
+        self._pipeline_running: bool = False
+        self._livesplit_enabled: bool = False
+        self._loop_enabled: bool = False
+        self._record_enabled: bool = False
 
         self._worker: PipelineWorker | None = None
 
@@ -71,36 +71,36 @@ class MainWindow(QMainWindow):
 
         # Dark theme
         self.setStyleSheet(
-            "QMainWindow { background-color: #0f172a; }"
-            "QGroupBox {"
-            "  border: 1px solid #334155;"
-            "  border-radius: 4px;"
-            "  margin-top: 8px;"
-            "  padding-top: 8px;"
-            "  color: #94a3b8;"
-            "  font-weight: bold;"
-            "}"
-            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
-            "QLabel { color: #e2e8f0; }"
-            "QPushButton {"
-            "  background-color: #1e293b;"
-            "  color: #e2e8f0;"
-            "  border: 1px solid #334155;"
-            "  border-radius: 4px;"
-            "  padding: 4px 8px;"
-            "}"
-            "QPushButton:hover { background-color: #334155; }"
-            "QPushButton:pressed { background-color: #475569; }"
-            "QPushButton:disabled { color: #475569; }"
-            "QPushButton:checked { background-color: #1d4ed8; border-color: #3b82f6; }"
-            "QProgressBar {"
-            "  border: 1px solid #334155;"
-            "  border-radius: 4px;"
-            "  text-align: center;"
-            "  color: #e2e8f0;"
-            "  background-color: #1e293b;"
-            "}"
-            "QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }"
+            "QMainWindow { background-color: #0f172a; }" +
+            "QGroupBox {" +
+            "  border: 1px solid #334155;" +
+            "  border-radius: 4px;" +
+            "  margin-top: 8px;" +
+            "  padding-top: 8px;" +
+            "  color: #94a3b8;" +
+            "  font-weight: bold;" +
+            "}" +
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }" +
+            "QLabel { color: #e2e8f0; }" +
+            "QPushButton {" +
+            "  background-color: #1e293b;" +
+            "  color: #e2e8f0;" +
+            "  border: 1px solid #334155;" +
+            "  border-radius: 4px;" +
+            "  padding: 4px 8px;" +
+            "}" +
+            "QPushButton:hover { background-color: #334155; }" +
+            "QPushButton:pressed { background-color: #475569; }" +
+            "QPushButton:disabled { color: #475569; }" +
+            "QPushButton:checked { background-color: #1d4ed8; border-color: #3b82f6; }" +
+            "QProgressBar {" +
+            "  border: 1px solid #334155;" +
+            "  border-radius: 4px;" +
+            "  text-align: center;" +
+            "  color: #e2e8f0;" +
+            "  background-color: #1e293b;" +
+            "}" +
+            "QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }" +
             "QScrollArea { border: none; }"
         )
 
@@ -118,12 +118,12 @@ class MainWindow(QMainWindow):
         video_group = QGroupBox("Preview")
         video_layout = QVBoxLayout(video_group)
         video_layout.setContentsMargins(4, 4, 4, 4)
-        self._video = VideoWidget()
+        self._video: VideoWidget = VideoWidget()
         video_layout.addWidget(self._video)
         top_splitter.addWidget(video_group)
 
         # Status panels (right, stretch=1)
-        self._status = StatusPanels()
+        self._status: StatusPanels = StatusPanels()
         top_splitter.addWidget(self._status)
 
         top_splitter.setStretchFactor(0, 3)
@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
         log_layout.setContentsMargins(4, 4, 4, 4)
-        self._log = LogPanel()
+        self._log: LogPanel = LogPanel()
         log_layout.addWidget(self._log)
         bottom_splitter.addWidget(log_group)
 
@@ -144,7 +144,7 @@ class MainWindow(QMainWindow):
         config_group = QGroupBox("Config")
         config_layout = QVBoxLayout(config_group)
         config_layout.setContentsMargins(4, 4, 4, 4)
-        self._config_editor = ConfigEditor()
+        self._config_editor: ConfigEditor = ConfigEditor()
         config_layout.addWidget(self._config_editor)
         bottom_splitter.addWidget(config_group)
 
@@ -161,7 +161,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(v_splitter, stretch=1)
 
         # Toolbar
-        self._toolbar = Toolbar()
+        self._toolbar: Toolbar = Toolbar()
         main_layout.addWidget(self._toolbar)
 
         # Connect toolbar signals
@@ -309,7 +309,7 @@ class MainWindow(QMainWindow):
         if not self._pipeline_running:
             return
         assert self._worker is not None
-        self._worker._running = False
+        self._worker.request_stop()
         self._worker.wait(3000)  # Wait up to 3s for clean shutdown
         self._toolbar.set_running(False)
         self._pipeline_running = False
@@ -382,6 +382,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Clean up on window close."""
         if self._pipeline_running and self._worker is not None:
-            self._worker._running = False
+            self._worker.request_stop()
             self._worker.wait(3000)
         super().closeEvent(event)

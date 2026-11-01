@@ -111,10 +111,11 @@ class TransitionDetector:
             self._start_detector = build_detector(config, config.start_transition)
 
         # State machine initialization
-        if config.start_transition is not None:
-            self._state: State = State.WAITING_FOR_START
-        else:
-            self._state: State = State.NORMAL
+        self._state: State = (
+            State.WAITING_FOR_START
+            if config.start_transition is not None
+            else State.NORMAL
+        )
         self._index: int = 0
         self._streak: int = 0
         # True while TRANSITION was entered from the start gate (vs a split):

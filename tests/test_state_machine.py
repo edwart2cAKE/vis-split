@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Tests for autosplitter.detection.state_machine (spec sections 7-10).
 
 Logic tests use synthetic DetectionResults; the integration test feeds real
