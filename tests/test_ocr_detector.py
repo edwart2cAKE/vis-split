@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Tests for autosplitter.detection.ocr_detector.
 
 OcrDetector pattern resolution and ROI cropping are tested without tesserocr.

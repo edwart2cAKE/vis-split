@@ -673,7 +673,9 @@ def _parse_start_transition(
     if roi_data is not None:
         if not isinstance(roi_data, dict):
             raise ConfigError(f"{label}: start_transition.roi must be a mapping")
-        roi_override = _parse_roi(roi_data, f"{label}: start_transition")
+        roi_override = _parse_roi(
+            cast(dict[str, object], roi_data), f"{label}: start_transition"
+        )
 
     auto_start = data.get("auto_start_timer", False)
     if not isinstance(auto_start, bool):
@@ -786,7 +788,7 @@ def _parse_ocr(value: object, label: str) -> OcrConfig | None:
     if not isinstance(raw_patterns, dict):
         raise ConfigError(f"{label}: ocr.patterns must be a mapping")
     patterns: list[OcrPattern] = []
-    for key, val in cast(dict[str, object], raw_patterns).items():
+    for key, val in cast(dict[object, object], raw_patterns).items():
         if not isinstance(key, str):
             raise ConfigError(f"{label}: ocr.patterns keys must be strings")
         # Validate regex compiles

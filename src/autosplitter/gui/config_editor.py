@@ -23,8 +23,8 @@ class ConfigEditor(QWidget):
     Shows validation errors inline.
     """
 
-    config_reloaded = Signal(str)  # new config path
-    config_error = Signal(str)  # error message
+    config_reloaded: Signal = Signal(str)  # new config path
+    config_error: Signal = Signal(str)  # error message
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -36,33 +36,33 @@ class ConfigEditor(QWidget):
 
         # Header
         header = QHBoxLayout()
-        self._file_label = QLabel("Config: \u2014")
+        self._file_label: QLabel = QLabel("Config: \u2014")
         self._file_label.setStyleSheet("font-weight: bold; color: #94a3b8;")
         header.addWidget(self._file_label, stretch=1)
 
-        self._reload_btn = QPushButton("\u27f3 Reload")
+        self._reload_btn: QPushButton = QPushButton("\u27f3 Reload")
         self._reload_btn.setFixedWidth(80)
         self._reload_btn.clicked.connect(self._on_reload)
         header.addWidget(self._reload_btn)
         layout.addLayout(header)
 
         # Editor
-        self._editor = QTextEdit()
+        self._editor: QTextEdit = QTextEdit()
         font = QFont("monospace")
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(10)
         self._editor.setFont(font)
         self._editor.setStyleSheet(
-            "QTextEdit {"
-            "  background-color: #1e293b;"
-            "  color: #e2e8f0;"
-            "  border: 1px solid #334155;"
+            "QTextEdit {" +
+            "  background-color: #1e293b;" +
+            "  color: #e2e8f0;" +
+            "  border: 1px solid #334155;" +
             "}"
         )
         layout.addWidget(self._editor, stretch=1)
 
         # Error label
-        self._error_label = QLabel("")
+        self._error_label: QLabel = QLabel("")
         self._error_label.setStyleSheet("color: #ef4444; font-weight: bold;")
         self._error_label.setWordWrap(True)
         self._error_label.hide()
@@ -101,10 +101,10 @@ class ConfigEditor(QWidget):
             load(str(self._config_path))
             self._error_label.hide()
             self._editor.setStyleSheet(
-                "QTextEdit {"
-                "  background-color: #1e293b;"
-                "  color: #e2e8f0;"
-                "  border: 1px solid #334155;"
+                "QTextEdit {" +
+                "  background-color: #1e293b;" +
+                "  color: #e2e8f0;" +
+                "  border: 1px solid #334155;" +
                 "}"
             )
             self.config_reloaded.emit(str(self._config_path))
@@ -112,10 +112,10 @@ class ConfigEditor(QWidget):
             self._error_label.setText(f"Invalid config: {exc}")
             self._error_label.show()
             self._editor.setStyleSheet(
-                "QTextEdit {"
-                "  background-color: #1e293b;"
-                "  color: #e2e8f0;"
-                "  border: 2px solid #ef4444;"
+                "QTextEdit {" +
+                "  background-color: #1e293b;" +
+                "  color: #e2e8f0;" +
+                "  border: 2px solid #ef4444;" +
                 "}"
             )
             self.config_error.emit(str(exc))

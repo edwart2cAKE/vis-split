@@ -27,28 +27,28 @@ class StatusPanels(QWidget):
         layout.setSpacing(4)
 
         # Detection panel
-        self._detection = _DetectionPanel()
+        self._detection: _DetectionPanel = _DetectionPanel()
         layout.addWidget(self._detection)
 
         # LiveSplit panel
-        self._livesplit = _LiveSplitPanel()
+        self._livesplit: _LiveSplitPanel = _LiveSplitPanel()
         layout.addWidget(self._livesplit)
 
         # Recording panel
-        self._recording = _RecordingPanel()
+        self._recording: _RecordingPanel = _RecordingPanel()
         layout.addWidget(self._recording)
 
         # OCR panel
-        self._ocr = _OcrPanel()
+        self._ocr: _OcrPanel = _OcrPanel()
         layout.addWidget(self._ocr)
 
         # Splits progress
-        self._splits_scroll = QScrollArea()
+        self._splits_scroll: QScrollArea = QScrollArea()
         self._splits_scroll.setWidgetResizable(True)
         self._splits_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self._splits = _SplitsPanel()
+        self._splits: _SplitsPanel = _SplitsPanel()
         self._splits_scroll.setWidget(self._splits)
         layout.addWidget(self._splits_scroll, stretch=1)
 
@@ -101,30 +101,30 @@ class _DetectionPanel(QGroupBox):
         super().__init__("Detection", parent)
         layout = QVBoxLayout(self)
 
-        self._state_label = QLabel("State: \u2014")
+        self._state_label: QLabel = QLabel("State: \u2014")
         self._state_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(self._state_label)
 
-        self._target_label = QLabel("Target: \u2014")
+        self._target_label: QLabel = QLabel("Target: \u2014")
         layout.addWidget(self._target_label)
 
         # Match ratio bar
         match_row = QHBoxLayout()
-        self._match_bar = QProgressBar()
+        self._match_bar: QProgressBar = QProgressBar()
         self._match_bar.setRange(0, 100)
         self._match_bar.setValue(0)
         self._match_bar.setTextVisible(True)
         self._match_bar.setFormat("%p%")
         match_row.addWidget(self._match_bar, stretch=1)
-        self._match_threshold = QLabel("\u2265 \u2014")
+        self._match_threshold: QLabel = QLabel("\u2265 \u2014")
         self._match_threshold.setMinimumWidth(60)
         match_row.addWidget(self._match_threshold)
         layout.addLayout(match_row)
 
-        self._split_label = QLabel("Split: \u2014")
+        self._split_label: QLabel = QLabel("Split: \u2014")
         layout.addWidget(self._split_label)
 
-        self._fps_label = QLabel("FPS: \u2014")
+        self._fps_label: QLabel = QLabel("FPS: \u2014")
         layout.addWidget(self._fps_label)
 
     def update_state(self, state: str) -> None:
@@ -157,14 +157,14 @@ class _LiveSplitPanel(QGroupBox):
         super().__init__("LiveSplit", parent)
         layout = QVBoxLayout(self)
 
-        self._connection_label = QLabel("\u25cb Disconnected")
+        self._connection_label: QLabel = QLabel("\u25cb Disconnected")
         self._connection_label.setStyleSheet("color: #94a3b8;")
         layout.addWidget(self._connection_label)
 
-        self._phase_label = QLabel("Phase: \u2014")
+        self._phase_label: QLabel = QLabel("Phase: \u2014")
         layout.addWidget(self._phase_label)
 
-        self._segment_label = QLabel("Segment: \u2014")
+        self._segment_label: QLabel = QLabel("Segment: \u2014")
         layout.addWidget(self._segment_label)
 
     def update_connection(self, connected: bool) -> None:
@@ -187,11 +187,11 @@ class _RecordingPanel(QGroupBox):
         super().__init__("Recording", parent)
         layout = QVBoxLayout(self)
 
-        self._status_label = QLabel("\u25cb Idle")
+        self._status_label: QLabel = QLabel("\u25cb Idle")
         self._status_label.setStyleSheet("color: #94a3b8;")
         layout.addWidget(self._status_label)
 
-        self._path_label = QLabel("")
+        self._path_label: QLabel = QLabel("")
         self._path_label.setWordWrap(True)
         self._path_label.setStyleSheet("font-size: 10px; color: #64748b;")
         layout.addWidget(self._path_label)
@@ -214,10 +214,10 @@ class _OcrPanel(QGroupBox):
         super().__init__("OCR", parent)
         layout = QVBoxLayout(self)
 
-        self._text_label = QLabel("Text: \u2014")
+        self._text_label: QLabel = QLabel("Text: \u2014")
         layout.addWidget(self._text_label)
 
-        self._conf_label = QLabel("")
+        self._conf_label: QLabel = QLabel("")
         self._conf_label.setStyleSheet("font-size: 10px; color: #64748b;")
         layout.addWidget(self._conf_label)
 
@@ -233,12 +233,12 @@ class _OcrPanel(QGroupBox):
 class _SplitsPanel(QGroupBox):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Splits", parent)
-        self._layout = QVBoxLayout(self)
+        self._layout: QVBoxLayout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._layout.setSpacing(2)
 
         self._rows: list[_SplitRow] = []
-        self._current_index = -1
+        self._current_index: int = -1
 
     def set_splits(
         self, names: list[str], colors: list[str], thresholds: list[float]
@@ -294,18 +294,18 @@ class _SplitRow(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._number = number
-        self._fired = False
+        self._number: int = number
+        self._fired: bool = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 1, 2, 1)
         layout.setSpacing(4)
 
-        self._status = QLabel(f"{number}.")
+        self._status: QLabel = QLabel(f"{number}.")
         self._status.setFixedWidth(24)
         layout.addWidget(self._status)
 
-        self._name_label = QLabel(name)
+        self._name_label: QLabel = QLabel(name)
         layout.addWidget(self._name_label, stretch=1)
 
         # Color dot (using Unicode circle)
@@ -321,14 +321,14 @@ class _SplitRow(QWidget):
             "gray": "#6b7280",
         }
         dot_color = color_map.get(color_name.lower(), "#6b7280")
-        self._color_dot = QLabel("\u25cf")
+        self._color_dot: QLabel = QLabel("\u25cf")
         self._color_dot.setStyleSheet(
             f"color: {dot_color}; font-size: 12px;"
         )
         self._color_dot.setFixedWidth(16)
         layout.addWidget(self._color_dot)
 
-        self._threshold_label = QLabel(f"{threshold:.0%}")
+        self._threshold_label: QLabel = QLabel(f"{threshold:.0%}")
         self._threshold_label.setFixedWidth(36)
         self._threshold_label.setStyleSheet(
             "font-size: 10px; color: #64748b;"
@@ -339,7 +339,7 @@ class _SplitRow(QWidget):
         """Highlight as current split."""
         if active:
             self.setStyleSheet(
-                "background-color: rgba(59, 130, 246, 0.3);"
+                "background-color: rgba(59, 130, 246, 0.3);" +
                 " border-radius: 3px;"
             )
             self._name_label.setStyleSheet("font-weight: bold; color: #60a5fa;")

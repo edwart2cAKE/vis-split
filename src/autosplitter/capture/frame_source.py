@@ -193,7 +193,7 @@ class MpegTsFrameSource:
         self._got_frame = True
         if not self._logged_dims:
             self._logged_dims = True
-            h, w = frame.shape[:2]
+            h, w = cast(tuple[int, int], frame.shape[:2])
             print(f"Decoded: {w}x{h} BGR")
         self._backoff = 0.0
         return frame
@@ -301,7 +301,7 @@ class MpegTsFrameSource:
                 pass
         if proc.stderr is not None:
             try:
-                err = proc.stderr.read(4096).decode("utf-8", errors="replace").strip()
+                err = cast(bytes, proc.stderr.read(4096)).decode("utf-8", errors="replace").strip()
                 if err:
                     first_line = err.split("\n", 1)[0]
                     print(f"\nffmpeg: {first_line}")

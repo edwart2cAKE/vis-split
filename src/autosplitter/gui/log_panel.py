@@ -14,7 +14,7 @@ class LogPanel(QPlainTextEdit):
     Captures status lines the CLI prints. Max 10,000 lines (ring buffer).
     """
 
-    MAX_LINES = 10_000
+    MAX_LINES: int = 10_000
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -29,11 +29,11 @@ class LogPanel(QPlainTextEdit):
 
         # Dark theme
         self.setStyleSheet(
-            "QPlainTextEdit {"
-            "  background-color: #0f172a;"
-            "  color: #e2e8f0;"
-            "  border: 1px solid #334155;"
-            "  padding: 4px;"
+            "QPlainTextEdit {" +
+            "  background-color: #0f172a;" +
+            "  color: #e2e8f0;" +
+            "  border: 1px solid #334155;" +
+            "  padding: 4px;" +
             "}"
         )
 
@@ -49,7 +49,7 @@ class LogPanel(QPlainTextEdit):
         """Append an error line in red."""
         timestamp = datetime.now(tz=UTC).strftime("%H:%M:%S")
         self.appendHtml(
-            f'<span style="color:#64748b;">[{timestamp}]</span> '
+            f'<span style="color:#64748b;">[{timestamp}]</span> ' +
             f'<span style="color:#ef4444; font-weight:bold;">ERROR: {text}</span>'
         )
         self._auto_scroll()
@@ -58,8 +58,8 @@ class LogPanel(QPlainTextEdit):
         """Append a split event line in green."""
         timestamp = datetime.now(tz=UTC).strftime("%H:%M:%S")
         self.appendHtml(
-            f'<span style="color:#64748b;">[{timestamp}]</span> '
-            f'<span style="color:#4ade80; font-weight:bold;">'
+            f'<span style="color:#64748b;">[{timestamp}]</span> ' +
+            '<span style="color:#4ade80; font-weight:bold;">' +
             f"SPLIT #{split_id}: {name}</span>"
         )
         self._auto_scroll()
@@ -68,7 +68,7 @@ class LogPanel(QPlainTextEdit):
         """Append a start event line in yellow."""
         timestamp = datetime.now(tz=UTC).strftime("%H:%M:%S")
         self.appendHtml(
-            f'<span style="color:#64748b;">[{timestamp}]</span> '
+            f'<span style="color:#64748b;">[{timestamp}]</span> ' +
             f'<span style="color:#facc15; font-weight:bold;">START: {name}</span>'
         )
         self._auto_scroll()

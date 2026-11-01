@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
 import cv2
 import numpy as np
@@ -31,26 +31,26 @@ class PipelineWorker(QThread):
     """
 
     # --- Outgoing signals (to GUI, auto-queued to main thread) ---
-    frame_ready = Signal(QImage)            # throttled, for video display
-    state_changed = Signal(str)             # machine.state.name
-    split_fired = Signal(int, str)          # split_id, split_name
-    start_fired = Signal(str)               # start name
-    match_ratio_updated = Signal(float)     # 0.0–1.0
-    fps_updated = Signal(float)             # rolling fps
-    split_index_updated = Signal(int, int)  # current_index, total
-    ls_connection_changed = Signal(bool)    # connected
-    ls_status_updated = Signal(str, str)    # phase, split_name
-    ocr_text_updated = Signal(str)          # latest OCR text or ""
-    recording_changed = Signal(bool, str)   # is_recording, path
-    log_message = Signal(str)               # status line for log panel
-    log_error = Signal(str)                 # error message for log panel
-    pipeline_error = Signal(str)            # fatal error message
-    pipeline_finished = Signal()            # source exhausted or DONE
-    loop_rearmed = Signal(str)              # waiting_for name
+    frame_ready: Signal = Signal(QImage)            # throttled, for video display
+    state_changed: Signal = Signal(str)             # machine.state.name
+    split_fired: Signal = Signal(int, str)          # split_id, split_name
+    start_fired: Signal = Signal(str)               # start name
+    match_ratio_updated: Signal = Signal(float)     # 0.0–1.0
+    fps_updated: Signal = Signal(float)             # rolling fps
+    split_index_updated: Signal = Signal(int, int)  # current_index, total
+    ls_connection_changed: Signal = Signal(bool)    # connected
+    ls_status_updated: Signal = Signal(str, str)    # phase, split_name
+    ocr_text_updated: Signal = Signal(str)          # latest OCR text or ""
+    recording_changed: Signal = Signal(bool, str)   # is_recording, path
+    log_message: Signal = Signal(str)               # status line for log panel
+    log_error: Signal = Signal(str)                 # error message for log panel
+    pipeline_error: Signal = Signal(str)            # fatal error message
+    pipeline_finished: Signal = Signal()            # source exhausted or DONE
+    loop_rearmed: Signal = Signal(str)              # waiting_for name
 
     # --- Incoming signals (queued to worker thread) ---
-    split_requested = Signal()
-    start_requested = Signal()
+    split_requested: Signal = Signal()
+    start_requested: Signal = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -69,22 +69,22 @@ class PipelineWorker(QThread):
         self._livesplit: LiveSplitClient | None = None
         self._cfg: Config | None = None
 
-        self._running = False
+        self._running: bool = False
 
         # Frame timing
-        self._frame_index = 0
+        self._frame_index: int = 0
         self._frame_stamps: list[float] = []
 
         # Split timing
-        self._last_split_time = 0.0
-        self._last_split_name = ""
+        self._last_split_time: float = 0.0
+        self._last_split_name: str = ""
 
         # Config reload
         self._config_path: Path | None = None
-        self._last_config_mtime = 0.0
+        self._last_config_mtime: float = 0.0
 
         # Loop rearm state
-        self._quiet_frames = 0
+        self._quiet_frames: int = 0
 
         # Connect incoming signals (these fire on worker thread after start())
         self.split_requested.connect(self._do_split)
@@ -107,6 +107,11 @@ class PipelineWorker(QThread):
         self._overlay_enabled = overlay_enabled
         self._config_poll_interval = config_poll_interval
 
+    def request_stop(self) -> None:
+        """Ask the pipeline loop to exit; the caller then wait()s on the thread."""
+        self._running = False
+
+    @override
     def run(self) -> None:
         """QThread entry point — runs on the worker thread."""
         config_path = self._config_path_str

@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false, reportUnusedParameter=false
 """Tests for autosplitter.capture.frame_source.
 
 RawPipeReader is exercised purely through synthetic byte streams so partial-
@@ -263,8 +264,8 @@ class TestMpegTsFrameSource:
 
         class FakeStream:
             def __init__(self) -> None:
-                self._buf = solid_frames(2, WIDTH, HEIGHT)
-                self._pos = 0
+                self._buf: bytes = solid_frames(2, WIDTH, HEIGHT)
+                self._pos: int = 0
 
             def fileno(self) -> int:
                 return 5

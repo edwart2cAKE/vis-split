@@ -258,7 +258,7 @@ def _probe_image(cfg: Config, image_path: str) -> int:
         print(f"INVALID IMAGE: {image_path}", file=sys.stderr)
         return 1
 
-    h, w = img.shape[:2]
+    h, w = cast(tuple[int, int], img.shape[:2])
     roi = cfg.roi
     # Parse ROI (normalized 0.0-1.0) to pixel coordinates
     x = int(roi.x * w)
@@ -274,8 +274,8 @@ def _probe_image(cfg: Config, image_path: str) -> int:
 
     roi_img = img[y:y + roi_h, x:x + roi_w]
     # Image is BGR (OpenCV), convert to RGB for display
-    avg_bgr = roi_img.mean(axis=(0, 1))
-    avg_rgb = (int(avg_bgr[2]), int(avg_bgr[1]), int(avg_bgr[0]))
+    avg_b, avg_g, avg_r = cast(list[float], roi_img.mean(axis=(0, 1)).tolist())
+    avg_rgb = (int(avg_r), int(avg_g), int(avg_b))
 
     print(f"Image: {image_path} ({w}x{h})")
     print(f"ROI: x={x} y={y} w={roi_w} h={roi_h} (normalized: {roi.x:.3f}, {roi.y:.3f}, {roi.width:.3f}, {roi.height:.3f})")
@@ -1061,8 +1061,8 @@ def _run_live(
                                 if sync_warned != (local_next, ls_name):
                                     sync_warned = (local_next, ls_name)
                                     print(
-                                        "\nWARN: LiveSplit desync: detector expects"
-                                        f' "{local_next}"'
+                                        "\nWARN: LiveSplit desync: detector expects" +
+                                        f' "{local_next}"' +
                                         f' but LiveSplit is at "{ls_name}"'
                                     )
                             else:
