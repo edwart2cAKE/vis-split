@@ -398,7 +398,11 @@ def test_real_timeout_leaves_no_child_and_recovers() -> None:
     assert r.last_error is not None and "timed out" in r.last_error
     assert r._proc is None  # pyright: ignore[reportPrivateUsage]
     r._timeout = 10.0  # pyright: ignore[reportPrivateUsage]
-    assert r.read(img) is None and r.last_error is None  # recovers; blank image
+    res = r.read(img)
+    assert r.last_error is None  # recovered: no timeout error any more
+    # A blank image reads as nothing on tesseract 5.5 but as low-confidence junk
+    # on older builds (5.3 gave ("oe", 3.8)); only a confident read would be wrong.
+    assert res is None or res[1] < 60.0
 
 
 @needs_tesseract
