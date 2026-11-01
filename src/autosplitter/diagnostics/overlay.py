@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import cv2
 import numpy as np
@@ -104,6 +105,7 @@ def annotate(
     last_split_age: float | None,
     fps: float,
     match_ratio: float,
+    ocr_label: str | None = None,
 ) -> np.ndarray:
     """Draw ROI rectangle + HUD on a copy of the frame.
 
@@ -115,6 +117,7 @@ def annotate(
         last_split_age: Seconds since last SplitEvent, or None.
         fps: Current rolling fps.
         match_ratio: Current match ratio (0.0-1.0) for active split.
+        ocr_label: Short OCR status shown next to the OCR ROI rectangle.
 
     Returns:
         Annotated frame (same array, modified in place).
@@ -124,6 +127,17 @@ def annotate(
     # ROI rectangle
     x, y, w, h = ocfg.roi_px
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+    # OCR ROI (yellow, BGR) with the current reading label below it
+    if cfg.ocr is not None and cfg.ocr.enabled:
+        fh, fw = cast(tuple[int, int], frame.shape[:2])
+        oroi = cfg.ocr.roi
+        ox, oy = int(oroi.x * fw), int(oroi.y * fh)
+        ow, oh = int(oroi.width * fw), int(oroi.height * fh)
+        cv2.rectangle(frame, (ox, oy), (ox + ow, oy + oh), (0, 255, 255), 2)
+        _draw_text_with_outline(
+            frame, ocr_label or "ocr", (ox, oy + oh + ocfg.line_height), ocfg
+        )
 
     # HUD lines
     split_name, threshold_pct, color_name = _get_active_split_info(machine, cfg)

@@ -22,10 +22,10 @@ roi:
   #      y1: 0.25
   #      x2: 0.75
   #      y2: 0.75
-  x: 0.15
-  y: 0.15
-  width: 0.40
-  height: 0.50
+  x: 0.10
+  y: 0.05
+  width: 0.80
+  height: 0.90
 
 ocr:
   # Level number: white digit(s) at the top-left of the GAME AREA. This ROI is for the
@@ -37,10 +37,10 @@ ocr:
   # digit is elsewhere: x=0.105 y=0.0 w=0.05 h=0.055. Keep the ROI tight and covering ALL
   # digits of the highest level (15 -> two digits).
   roi:
-    x: 0.1469
-    y: 0.1472
-    width: 0.0177
-    height: 0.0231
+    x: 0.10
+    y: 0.0
+    width: 0.04
+    height: 0.05
   engine:
     psm: 7                     # single line: best confidence for 1-2 digits
     whitelist: "0123456789"
@@ -62,16 +62,18 @@ ocr:
   # apply_to_last_split: true below, `mode: undo` also un-ends a run whose HUD
   # number lingers after a real finish for longer than ~6 s, and there is NO
   # automatic recovery for that case (finish by hand; follow_timer follows it).
-  mode: verify_only
+  mode: undo
   undo:
-    # Start Powerless: the HUD number updates 1-2 s after the transition and
-    # disappears when the game is finished; the shortest level is longer than
-    # the ~4 s undo delay. settle 3.0 s = 1.5x the largest observed HUD lag.
-    settle_seconds: 3.0
-    post_clear_seconds: 1.0
+    # Start Powerless: measured HUD lag after the colour fire over a real 15-level run
+    # (dry run, 2026-11-01): +0.28..+0.52 s, 15/15 levels read. settle 1.0 s = ~2x the
+    # largest lag. Verdict latency ~ settle + post_clear + confirm = ~2.1 s; the shortest
+    # level is ~12 s, so window_seconds 8 closes well before the next transition.
+    # No deaths were in that run: the undo verdict itself is still untested on real footage.
+    settle_seconds: 1.0
+    post_clear_seconds: 0.5
     confirm_reads: 3
-    confirm_seconds: 1.0
-    window_seconds: 10.0
+    confirm_seconds: 0.6
+    window_seconds: 8.0
     min_confidence: 85         # misreads under compression can reach ~80
     require_baseline: true
     baseline_seconds: 2.0
@@ -126,92 +128,94 @@ colors:
 splits:
   # 15 levels: each level ends at purple portal.
   - id: 1
-    name: "Level 1"
+    name: "Level 1 (R)"
     color: transition_color
     threshold: 0.75
 
   - id: 2
-    name: "Level 2"
+    name: "Level 2 (L)"
     color: transition_color
     threshold: 0.75
 
   - id: 3
-    name: "Level 3"
+    name: "Level 3 (L)"
     color: transition_color
     threshold: 0.75
 
   - id: 4
-    name: "Level 4"
+    name: "Level 4 (R)"
     color: transition_color
     threshold: 0.75
 
   - id: 5
-    name: "Level 5"
+    name: "Level 5 (L1)"
     color: transition_color
     threshold: 0.75
 
   - id: 6
-    name: "Level 6"
+    name: "Level 6 (L)"
     color: transition_color
     threshold: 0.75
 
   - id: 7
-    name: "Level 7"
+    name: "Level 7 (L)"
     color: transition_color
     threshold: 0.75
 
   - id: 8
-    name: "Level 8"
+    name: "Level 8 (L)"
     color: transition_color
     threshold: 0.75
 
   - id: 9
-    name: "Level 9"
+    name: "Level 9 (R)"
     color: transition_color
     threshold: 0.75
 
   - id: 10
-    name: "Level 10"
+    name: "Level 10 (R)"
     color: transition_color
     threshold: 0.75
 
   - id: 11
-    name: "Level 11"
+    name: "Level 11 (L)"
     color: transition_color
     threshold: 0.75
 
   - id: 12
-    name: "Level 12"
+    name: "Level 12 (R)"
     color: transition_color
     threshold: 0.75
 
   - id: 13
-    name: "Level 13"
+    name: "Level 13 (R1)"
     color: transition_color
     threshold: 0.75
 
   - id: 14
-    name: "Level 14"
+    name: "Level 14 (L1)"
     color: transition_color
     threshold: 0.75
 
   - id: 15
-    name: "Level 15 (Finish)"
+    name: "Level 15 (R1)"
     color: transition_color
     threshold: 0.75
 
 livesplit:
+
   host: "127.0.0.1"
   port: 16834
   # Socket-op budget (bounds a hung-server stall to this many seconds) and
   # the cadence of reconnect attempts while LiveSplit Server is down.
   timeout_seconds: 0.25
   reconnect_seconds: 5.0
+  follow_timer: true
 
 record:
   # Path template for recordings. Variables: {game}, {date}, {time},
   # {datetime}, {attempt} (auto-incremented, zero-padded to 4 digits).
-  path_template: "recordings/{game}/{datetime}_{attempt:04d}.mkv"
+  path_template: "~/Videos/Speedrun/{game}/{datetime}_{attempt:04d}.mkv"
   # Convert .mkv to this format after the run (best-effort, .mkv kept).
   convert_to: "mp4"
   # Keep recording for this many seconds after the last split fires

@@ -1138,6 +1138,7 @@ def _run_live(
                         last_split_age,
                         fps,
                         ratio,
+                        _ocr_column(machine, ocr_unavailable),
                     )
                     cv2.imshow(overlay_window_name, overlay_frame)
                     key = cv2.waitKey(1) & 0xFF
