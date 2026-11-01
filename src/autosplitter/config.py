@@ -131,6 +131,33 @@ class OcrEngine:
     language: str = "eng"
     psm: int = 7
     min_confidence: float = 60.0
+    backend: str = "auto"
+    whitelist: str | None = None
+    timeout_seconds: float = 2.0
+
+
+@dataclass(frozen=True)
+class OcrPreprocess:
+    """Image preprocessing applied to the OCR crop before the engine reads it."""
+
+    scale: int = 4
+    blur: int = 3
+    threshold: str = "otsu"
+    pad: int = 10
+    # threshold == "color": RGB text colour (converted to BGR bounds once at
+    # worker construction) and inclusive per-channel tolerance.
+    text_color: tuple[int, int, int] | None = None
+    text_tolerance: int = 40
+
+
+@dataclass(frozen=True)
+class OcrFilter:
+    """Trust rules applied to OCR readings before they count as evidence."""
+
+    consensus_frames: int = 3
+    jump_consensus_frames: int = 6
+    max_age_seconds: float = 0.5
+    min_confidence: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -146,17 +173,60 @@ class OcrPattern:
 
 
 @dataclass(frozen=True)
+class OcrUndo:
+    """"Go then undo" judge settings (``ocr.undo``).
+
+    The colour detector still splits on the transition; the judge decides
+    whether the HUD number failed to advance (a death) afterwards. With
+    ``ocr.mode: verify_only`` it only LOGS what it would do (dry run); with
+    ``ocr.mode: undo`` (and ``--livesplit``) the executor sends ``unsplit``.
+    """
+
+    settle_seconds: float = 3.0
+    confirm_reads: int = 3
+    confirm_seconds: float = 1.0
+    window_seconds: float = 10.0
+    min_confidence: float = 80.0
+    require_baseline: bool = True
+    baseline_seconds: float = 2.0
+    # A D-1 read counts only this long after the advancing CLEAR (settle is
+    # measured from the FIRE; a long-lit transition could otherwise count
+    # while the old HUD number still lingers).
+    post_clear_seconds: float = 1.0
+    # Opt-in: also judge (and, in mode undo, undo) a death on the LAST level.
+    # After the last split the HUD level number should VANISH on a genuine
+    # finish; it keeps showing the level after a death. A false undo of a
+    # genuine finish has no automatic recovery, so last-split windows wait
+    # ``last_split_extra_settle_seconds`` longer than ``settle_seconds``.
+    apply_to_last_split: bool = False
+    last_split_extra_settle_seconds: float = 2.0
+    # ``ocr.mode: undo`` only: after a verified undo of split k, if the HUD
+    # shows k+1 within ``recover_seconds`` (the number was merely late), send
+    # ``split`` again. The re-split is recorded late by the HUD lag.
+    recover_late_hud: bool = True
+    recover_seconds: float = 10.0
+
+
+@dataclass(frozen=True)
 class OcrConfig:
     """OCR-based split number detection (augments color detection).
 
-    Reads text from a separate ROI and re-syncs the split index when
-    the recognized number diverges from the color-driven index.
+    Reads text from a separate ROI and compares the recognized split number
+    with the color-driven index (``mode: verify_only`` is read-only: it logs
+    and shows the comparison but never changes detector or LiveSplit state;
+    ``mode: undo`` is the opt-in executor that may send ``unsplit``).
     """
 
     roi: Roi
     engine: OcrEngine = OcrEngine()
     patterns: tuple[OcrPattern, ...] = ()
     poll_interval_frames: int = 3
+    enabled: bool = True
+    mode: str = "verify_only"
+    max_reads_per_second: float = 4.0
+    preprocess: OcrPreprocess = OcrPreprocess()
+    filter: OcrFilter = OcrFilter()
+    undo: OcrUndo | None = None
 
 
 @dataclass(frozen=True)
@@ -176,7 +246,14 @@ class Config:
 
 
 def _is_number(value: object) -> TypeGuard[float]:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, int):
+        try:
+            _ = float(value)  # ints beyond float range are not usable numbers
+        except OverflowError:
+            return False
+    return True
 
 
 def load(path: str | Path = "config.yaml") -> Config:
@@ -216,6 +293,11 @@ def load(path: str | Path = "config.yaml") -> Config:
     start_transition = _parse_start_transition(data.get("start_transition"), colors, label)
     record = _parse_record(data.get("record"), label)
     ocr = _parse_ocr(data.get("ocr"), label)
+    # Cross-section rule (after every per-section error): the OCR undo executor
+    # relies on follow_timer's rollback/skip rules to repair what it cannot
+    # confirm. resync_on_unsplit alone is not enough.
+    if ocr is not None and ocr.mode == "undo" and not livesplit.follow_timer:
+        raise ConfigError(f'{label}: ocr.mode "undo" requires livesplit.follow_timer: true')
 
     return Config(
         capture=capture,
@@ -683,11 +765,19 @@ def _parse_ocr(value: object, label: str) -> OcrConfig | None:
             f"{label}: ocr.engine.min_confidence must be between 0.0 and 100.0"
         )
 
-    engine = OcrEngine(
-        language=language,
-        psm=int(psm),
-        min_confidence=float(min_conf),
-    )
+    backend = engine_raw.get("backend", "auto")
+    if backend not in ("auto", "tesseract_cli", "tesserocr"):
+        raise ConfigError(
+            f'{label}: ocr.engine.backend must be "auto", "tesseract_cli" or "tesserocr"'
+        )
+    whitelist = engine_raw.get("whitelist")
+    if whitelist is not None and (not isinstance(whitelist, str) or not whitelist):
+        raise ConfigError(f"{label}: ocr.engine.whitelist must be a non-empty string or null")
+    timeout = engine_raw.get("timeout_seconds", 2.0)
+    if not _is_number(timeout) or isinstance(timeout, bool):
+        raise ConfigError(f"{label}: ocr.engine.timeout_seconds must be a number")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ConfigError(f"{label}: ocr.engine.timeout_seconds must be greater than 0")
 
     # Patterns
     raw_patterns = data.get("patterns")
@@ -726,9 +816,218 @@ def _parse_ocr(value: object, label: str) -> OcrConfig | None:
             f"{label}: ocr.poll_interval_frames must be at least 1"
         )
 
+    enabled = data.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError(f"{label}: ocr.enabled must be true or false")
+
+    mode = data.get("mode", "verify_only")
+    if mode not in ("verify_only", "undo"):
+        raise ConfigError(f'{label}: ocr.mode must be "verify_only" or "undo"')
+    if mode == "undo" and not patterns:
+        raise ConfigError(f'{label}: ocr.patterns must not be empty when ocr.mode is "undo"')
+
+    max_rate = data.get("max_reads_per_second", 4.0)
+    if not _is_number(max_rate) or isinstance(max_rate, bool):
+        raise ConfigError(f"{label}: ocr.max_reads_per_second must be a number")
+    if not math.isfinite(max_rate) or not 0 < max_rate <= 30:
+        raise ConfigError(
+            f"{label}: ocr.max_reads_per_second must be greater than 0 and at most 30"
+        )
+
+    engine = OcrEngine(
+        language=language,
+        psm=int(psm),
+        min_confidence=float(min_conf),
+        backend=backend,
+        whitelist=whitelist,
+        timeout_seconds=float(timeout),
+    )
+    preprocess = _parse_ocr_preprocess(data.get("preprocess"), label)
+    flt = _parse_ocr_filter(data.get("filter"), label, float(min_conf))
+    undo = _parse_ocr_undo(data.get("undo"), label, bool(patterns))
+    if mode == "undo" and undo is None:
+        undo = OcrUndo()  # mode: undo without an undo: section = all defaults
+
     return OcrConfig(
         roi=roi,
         engine=engine,
         patterns=tuple(patterns),
         poll_interval_frames=int(poll_interval),
+        enabled=enabled,
+        mode=mode,
+        max_reads_per_second=float(max_rate),
+        preprocess=preprocess,
+        filter=flt,
+        undo=undo,
+    )
+
+
+def _ocr_subsection(value: object, label: str, name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label}: ocr.{name} must be a mapping")
+    return cast(dict[str, object], value)
+
+
+def _ocr_int(raw: dict[str, object], key: str, default: int, label: str, path: str) -> int:
+    val = raw.get(key, default)
+    if not isinstance(val, int) or isinstance(val, bool):
+        raise ConfigError(f"{label}: ocr.{path}.{key} must be an integer")
+    return val
+
+
+def _parse_ocr_preprocess(value: object, label: str) -> OcrPreprocess:
+    raw = _ocr_subsection(value, label, "preprocess")
+    scale = _ocr_int(raw, "scale", 4, label, "preprocess")
+    if not 1 <= scale <= 8:
+        raise ConfigError(f"{label}: ocr.preprocess.scale must be between 1 and 8")
+    blur = _ocr_int(raw, "blur", 3, label, "preprocess")
+    if blur < 0 or (blur != 0 and blur % 2 == 0):
+        raise ConfigError(f"{label}: ocr.preprocess.blur must be 0 or an odd integer")
+    threshold = raw.get("threshold", "otsu")
+    if threshold not in ("otsu", "none", "color"):
+        raise ConfigError(
+            f'{label}: ocr.preprocess.threshold must be "otsu", "none" or "color"'
+        )
+    pad = _ocr_int(raw, "pad", 10, label, "preprocess")
+    if not 0 <= pad <= 50:
+        raise ConfigError(f"{label}: ocr.preprocess.pad must be between 0 and 50")
+    text_color: tuple[int, int, int] | None = None
+    raw_color = raw.get("text_color")
+    if raw_color is not None:
+        rgb = _coerce_rgb_list(raw_color)
+        if rgb is None or not all(0 <= c <= 255 for c in rgb):
+            raise ConfigError(
+                f"{label}: ocr.preprocess.text_color must be [r, g, b] with values 0-255"
+            )
+        text_color = (rgb[0], rgb[1], rgb[2])
+    elif threshold == "color":
+        raise ConfigError(
+            f'{label}: ocr.preprocess.text_color is required when'
+            + ' ocr.preprocess.threshold is "color"'
+        )
+    tol = _ocr_int(raw, "text_tolerance", 40, label, "preprocess")
+    if not 0 <= tol <= 255:
+        raise ConfigError(f"{label}: ocr.preprocess.text_tolerance must be between 0 and 255")
+    return OcrPreprocess(
+        scale=scale, blur=blur, threshold=threshold, pad=pad,
+        text_color=text_color, text_tolerance=tol,
+    )
+
+
+def _undo_float(raw: dict[str, object], key: str, default: float, label: str) -> float:
+    val = raw.get(key, default)
+    if not _is_number(val) or isinstance(val, bool):
+        raise ConfigError(f"{label}: ocr.undo.{key} must be a number")
+    if not math.isfinite(val):
+        raise ConfigError(f"{label}: ocr.undo.{key} must be a finite number")
+    return float(val)
+
+
+def _undo_bool(raw: dict[str, object], key: str, default: bool, label: str) -> bool:
+    val = raw.get(key, default)
+    if not isinstance(val, bool):
+        raise ConfigError(f"{label}: ocr.undo.{key} must be true or false")
+    return val
+
+
+def _parse_ocr_undo(value: object, label: str, has_patterns: bool) -> OcrUndo | None:
+    """Parse the optional ``ocr.undo`` section (None when absent)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label}: ocr.undo must be a mapping")
+    raw = cast(dict[str, object], value)
+    if not has_patterns:
+        raise ConfigError(f"{label}: ocr.patterns must not be empty when ocr.undo is set")
+    settle = _undo_float(raw, "settle_seconds", 3.0, label)
+    if settle <= 0:
+        raise ConfigError(f"{label}: ocr.undo.settle_seconds must be greater than 0")
+    reads = raw.get("confirm_reads", 3)
+    if not isinstance(reads, int) or isinstance(reads, bool):
+        raise ConfigError(f"{label}: ocr.undo.confirm_reads must be an integer")
+    if reads < 1:
+        raise ConfigError(f"{label}: ocr.undo.confirm_reads must be at least 1")
+    confirm = _undo_float(raw, "confirm_seconds", 1.0, label)
+    if confirm < 0:
+        raise ConfigError(f"{label}: ocr.undo.confirm_seconds must be at least 0")
+    if reads == 1 and confirm == 0:
+        raise ConfigError(
+            f"{label}: ocr.undo.confirm_reads of 1 requires"
+            + " ocr.undo.confirm_seconds greater than 0"
+        )
+    post_clear = _undo_float(raw, "post_clear_seconds", 1.0, label)
+    if post_clear < 0:
+        raise ConfigError(f"{label}: ocr.undo.post_clear_seconds must be at least 0")
+    window = _undo_float(raw, "window_seconds", 10.0, label)
+    last = _undo_bool(raw, "apply_to_last_split", False, label)
+    extra = _undo_float(raw, "last_split_extra_settle_seconds", 2.0, label)
+    if extra < 0:
+        raise ConfigError(
+            f"{label}: ocr.undo.last_split_extra_settle_seconds must be at least 0"
+        )
+    if window <= settle + confirm:
+        raise ConfigError(
+            f"{label}: ocr.undo.window_seconds must be greater than"
+            + " settle_seconds + confirm_seconds"
+        )
+    if last and window <= settle + extra + confirm:
+        raise ConfigError(
+            f"{label}: ocr.undo.window_seconds must be greater than settle_seconds"
+            + " + last_split_extra_settle_seconds + confirm_seconds"
+            + " when apply_to_last_split is true"
+        )
+    min_conf = _undo_float(raw, "min_confidence", 80.0, label)
+    if not 0.0 <= min_conf <= 100.0:
+        raise ConfigError(f"{label}: ocr.undo.min_confidence must be between 0.0 and 100.0")
+    require_baseline = _undo_bool(raw, "require_baseline", True, label)
+    baseline = _undo_float(raw, "baseline_seconds", 2.0, label)
+    if baseline <= 0:
+        raise ConfigError(f"{label}: ocr.undo.baseline_seconds must be greater than 0")
+    recover = _undo_bool(raw, "recover_late_hud", True, label)
+    recover_secs = _undo_float(raw, "recover_seconds", 10.0, label)
+    if recover_secs <= 0:
+        raise ConfigError(f"{label}: ocr.undo.recover_seconds must be greater than 0")
+    return OcrUndo(
+        settle_seconds=settle,
+        confirm_reads=reads,
+        confirm_seconds=confirm,
+        window_seconds=window,
+        min_confidence=min_conf,
+        require_baseline=require_baseline,
+        baseline_seconds=baseline,
+        post_clear_seconds=post_clear,
+        apply_to_last_split=last,
+        last_split_extra_settle_seconds=extra,
+        recover_late_hud=recover,
+        recover_seconds=recover_secs,
+    )
+
+
+def _parse_ocr_filter(value: object, label: str, default_conf: float) -> OcrFilter:
+    raw = _ocr_subsection(value, label, "filter")
+    consensus = _ocr_int(raw, "consensus_frames", 3, label, "filter")
+    if consensus < 1:
+        raise ConfigError(f"{label}: ocr.filter.consensus_frames must be at least 1")
+    jump = _ocr_int(raw, "jump_consensus_frames", 6, label, "filter")
+    if jump < 1:
+        raise ConfigError(f"{label}: ocr.filter.jump_consensus_frames must be at least 1")
+    max_age = raw.get("max_age_seconds", 0.5)
+    if not _is_number(max_age) or isinstance(max_age, bool):
+        raise ConfigError(f"{label}: ocr.filter.max_age_seconds must be a number")
+    if not math.isfinite(max_age) or max_age <= 0:
+        raise ConfigError(f"{label}: ocr.filter.max_age_seconds must be greater than 0")
+    min_conf = raw.get("min_confidence", default_conf)
+    if not _is_number(min_conf) or isinstance(min_conf, bool):
+        raise ConfigError(f"{label}: ocr.filter.min_confidence must be a number")
+    if not 0.0 <= min_conf <= 100.0:
+        raise ConfigError(
+            f"{label}: ocr.filter.min_confidence must be between 0.0 and 100.0"
+        )
+    return OcrFilter(
+        consensus_frames=consensus,
+        jump_consensus_frames=jump,
+        max_age_seconds=float(max_age),
+        min_confidence=float(min_conf),
     )

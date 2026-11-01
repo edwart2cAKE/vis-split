@@ -45,6 +45,11 @@ class LiveSplitClient:
         self._sock: socket.socket | None = None
         # None = never attempted; monotonic timestamp otherwise.
         self._last_attempt: float | None = None
+        # True when the last send() / split() / unsplit() / start() got its
+        # bytes through ``sendall`` (even if a later drain hit EOF and the call
+        # returned False): the command MAY have been applied. False means it
+        # definitely never left this process.
+        self.last_send_wrote: bool = False
 
     @property
     def connected(self) -> bool:
@@ -58,6 +63,14 @@ class LiveSplitClient:
     def split(self) -> bool:
         """Send one ``split`` command; False if the server is unreachable."""
         return self._send(b"split")
+
+    def unsplit(self) -> bool:
+        """Send one ``unsplit`` command; False if the server is unreachable.
+
+        Fire-and-forget like :meth:`split`. Only the opt-in ``ocr.mode: undo``
+        executor (``livesplit/undo_exec.py``) calls it.
+        """
+        return self._send(b"unsplit")
 
     def start(self) -> bool:
         """Send one ``start`` command; False if the server is unreachable."""
@@ -192,6 +205,7 @@ class LiveSplitClient:
         return True
 
     def _send(self, command: bytes) -> bool:
+        self.last_send_wrote = False
         if not self._ensure_connected():
             return False
         sock = self._sock
@@ -199,6 +213,7 @@ class LiveSplitClient:
             return False
         try:
             sock.sendall(command + b"\n")
+            self.last_send_wrote = True
             self._drain(sock)
             return True
         except OSError:

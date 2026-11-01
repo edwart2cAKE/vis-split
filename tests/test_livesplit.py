@@ -394,3 +394,76 @@ class TestResilience:
         # And the next attempt respects the rate limiter (no new socket).
         assert client.split() is False
         assert len(created) == 1
+
+
+class TestUnsplit:
+    """``unsplit`` is fire-and-forget exactly like ``split`` (called only by the undo executor)."""
+
+    def test_wire_bytes_and_no_reply_expected(self, server: RestartableServer) -> None:
+        client = make_client(server.port)
+        assert client.unsplit() is True
+        assert client.split() is True
+        expected = b"unsplit\nsplit\n"
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and server.received_bytes() != expected:
+            time.sleep(0.01)
+        assert server.received_bytes() == expected
+        client.close()
+
+    def test_server_chatter_is_drained(self, server: RestartableServer) -> None:
+        server.auto_reply = b"[Error] noise\n"
+        client = make_client(server.port)
+        assert client.unsplit() is True
+        assert client.unsplit() is True
+        client.close()
+
+    def test_server_down_returns_false_without_raising(self) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        port = cast("tuple[str, int]", listener.getsockname())[1]
+        listener.close()
+        client = make_client(port)
+        started = time.monotonic()
+        assert client.unsplit() is False
+        assert time.monotonic() - started < 1.0
+        assert client.connected is False
+
+    def test_reconnect_is_rate_limited_like_split(self, server: RestartableServer) -> None:
+        client = make_client(server.port, reconnect_seconds=30.0)
+        server.stop()
+        assert client.unsplit() is False
+        server.start()
+        time.sleep(0.05)
+        assert client.unsplit() is False  # inside the reconnect window
+        assert client.split() is False
+
+    def test_recovers_when_server_comes_back(self, server: RestartableServer) -> None:
+        client = make_client(server.port, reconnect_seconds=0.05)
+        assert client.unsplit() is True
+        server.stop()
+        client.teardown()
+        assert client.unsplit() is False
+        server.start()
+        deadline = time.monotonic() + 2.0
+        ok = False
+        while time.monotonic() < deadline and not ok:
+            ok = client.unsplit()
+            time.sleep(0.02)
+        assert ok is True
+        client.close()
+
+    def test_hung_send_never_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class HungSocket(socket.socket):
+            @override
+            def sendall(self, data: ReadableBuffer, flags: int = 0, /) -> None:
+                raise TimeoutError("simulated send stall")
+
+        def fake_create_connection(
+            _address: tuple[str, int], _timeout: float | None = None
+        ) -> socket.socket:
+            return HungSocket()
+
+        monkeypatch.setattr(socket, "create_connection", fake_create_connection)
+        client = make_client(16834)
+        assert client.unsplit() is False
+        assert client.connected is False

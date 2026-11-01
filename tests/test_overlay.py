@@ -165,3 +165,21 @@ class TestOverlayDynamicValues:
 
         annotated = annotate(frame, cfg, machine, True, None, 60.0, 0.95)
         assert annotated.shape == frame.shape
+
+def test_ocr_roi_rectangle_drawn_in_yellow() -> None:
+    from dataclasses import replace
+
+    from autosplitter.config import OcrConfig
+
+    cfg = replace(make_config(), ocr=OcrConfig(roi=Roi(x=0.0, y=0.0, width=0.25, height=0.25)))
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    out = annotate(frame, cfg, TransitionDetector(cfg), True, None, 60.0, 0.0, "ocr=3=")
+    # OCR rect is (0,0)-(16,16); bottom edge is at y=14..15
+    assert np.any(np.all(out[14:16, 0:16] == [0, 255, 255], axis=2))
+
+
+def test_no_ocr_rectangle_without_ocr_config() -> None:
+    cfg = make_config()
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    out = annotate(frame, cfg, TransitionDetector(cfg), True, None, 60.0, 0.0)
+    assert not np.any(np.all(out == [0, 255, 255], axis=2))

@@ -1,5 +1,5 @@
 capture:
-  fps: 120
+  fps: 60                          # OBS Common FPS Value of the sidecar stream (60)
   # OBS sidecar output (Recording -> Custom Output (FFmpeg), container mpegts).
   # Pin the sidecar's Output (scaled) Resolution to width x height below,
   # regardless of canvas size (works for both 1920x1080 and 2560x1440 setups).
@@ -22,30 +22,75 @@ roi:
   #      y1: 0.25
   #      x2: 0.75
   #      y2: 0.75
-  x: 0.15
-  y: 0.15
-  width: 0.40
-  height: 0.50
+  x: 0.10
+  y: 0.05
+  width: 0.80
+  height: 0.90
 
 ocr:
-  # Level number is a white digit in the top-left corner of the gameplay area.
-  # ROI: top-left 10%x10% of the frame.
+  # Level number: white digit(s) at the top-left of the GAME AREA. This ROI is for the
+  # BROWSER-WINDOW capture (game embedded in a web page, 1920x1080): the digit is only
+  # ~18 px tall at x 285..312, y 162..180 px (two digits reach x~312), ROI = those
+  # pixels + ~3 px margin. Measured on a real 7.5 min recording: reads every level 1..15
+  # at confidence 93-97 at 1920x1080 and at 640x360 (87/90 frames >= 85), including with
+  # 400 kbps NVENC. For a FULLSCREEN game capture (tests/fixtures/example_hud.png) the
+  # digit is elsewhere: x=0.105 y=0.0 w=0.05 h=0.055. Keep the ROI tight and covering ALL
+  # digits of the highest level (15 -> two digits).
   roi:
-    x: 0.0
+    x: 0.10
     y: 0.0
-    width: 0.10
-    height: 0.10
+    width: 0.04
+    height: 0.05
   engine:
-    psm: 10    # single character
+    psm: 7                     # single line: best confidence for 1-2 digits
+    whitelist: "0123456789"
     min_confidence: 60.0
   patterns:
-    "(\\d+)": null   # extract digit as 1-based split id
+    "^\\s*(\\d+)\\s*$": null   # 1-based level number -> split index
+  preprocess:
+    threshold: color           # white text on mid-gray; immune to the black bar
+    text_color: [255, 255, 255]
+    text_tolerance: 70         # ~half the text/background contrast (measured best)
+    blur: 0
+    scale: 4
   poll_interval_frames: 3
+  # DRY RUN: only logs `OCR: screen says …` / `would UNDO …` / `HUD advanced +X.XXs`,
+  # `HUD gone after the last split …`, and sends nothing to LiveSplit. Watch those
+  # lines over several real runs (genuine levels, deaths, and real finishes) first.
+  # To actually undo deaths (the death transition is identical to the level
+  # transition) set `mode: undo` AND livesplit.follow_timer: true. NOTE: with
+  # apply_to_last_split: true below, `mode: undo` also un-ends a run whose HUD
+  # number lingers after a real finish for longer than ~6 s, and there is NO
+  # automatic recovery for that case (finish by hand; follow_timer follows it).
+  mode: undo
+  undo:
+    # Start Powerless: measured HUD lag after the colour fire over a real 15-level run
+    # (dry run, 2026-11-01): +0.28..+0.52 s, 15/15 levels read. settle 1.0 s = ~2x the
+    # largest lag. Verdict latency ~ settle + post_clear + confirm = ~2.1 s; the shortest
+    # level is ~12 s, so window_seconds 8 closes well before the next transition.
+    # No deaths were in that run: the undo verdict itself is still untested on real footage.
+    settle_seconds: 1.0
+    post_clear_seconds: 0.5
+    confirm_reads: 3
+    confirm_seconds: 0.6
+    window_seconds: 8.0
+    min_confidence: 85         # misreads under compression can reach ~80
+    require_baseline: true
+    baseline_seconds: 2.0
+    apply_to_last_split: true  # HUD vanishes on a real finish => a lingering HUD means a death
+    last_split_extra_settle_seconds: 2.0   # extra delay on the last split (no recovery)
 
 detection:
-  # Debounce is frame-counted: 3 frames at 60 fps ~= 50 ms of flicker immunity.
-  required_frames: 3
-  reset_threshold: 0.80
+  # Debounce is frame-counted (60 fps stream). A DEATH and a level completion fire the same
+  # dark wipe, but the wipe is longer for a completion. Measured on 8 real recordings (3 days;
+  # 86 completions incl. finishes, 23 deaths), frames at 60 fps with the match threshold 0.75:
+  #   completions 17-21 frames, deaths 11-12 frames, start gate 17-18 frames.
+  # required_frames 15 sits between them (3 above the longest death, 2 below the shortest
+  # completion), so deaths never fire a split. Every split AND the start gate therefore use
+  # threshold 0.75 (at the old 0.90 the two overlap). Splits fire ~0.2 s later than before
+  # (constant offset). On a 120 fps stream double required_frames (30).
+  required_frames: 15
+  reset_threshold: 0.70
   # --loop only: after DONE, rearm once the NEXT run's first split color
   # stays below reset_threshold for this many seconds.
   restart_quiet_seconds: 3.0
@@ -57,7 +102,7 @@ start_transition:
   # Tune with: uv run python -m autosplitter.main --config configs/start-powerless.yaml --probe screenshot.png
   name: "Run Start"
   color: transition_color
-  threshold: 0.85
+  threshold: 0.75
   # Optional: auto-start LiveSplit timer when start detected
   auto_start_timer: true
 
@@ -83,92 +128,94 @@ colors:
 splits:
   # 15 levels: each level ends at purple portal.
   - id: 1
-    name: "Level 1"
+    name: "Level 1 (R)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 2
-    name: "Level 2"
+    name: "Level 2 (L)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 3
-    name: "Level 3"
+    name: "Level 3 (L)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 4
-    name: "Level 4"
+    name: "Level 4 (R)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 5
-    name: "Level 5"
+    name: "Level 5 (L1)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 6
-    name: "Level 6"
+    name: "Level 6 (L)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 7
-    name: "Level 7"
+    name: "Level 7 (L)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 8
-    name: "Level 8"
+    name: "Level 8 (L)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 9
-    name: "Level 9"
+    name: "Level 9 (R)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 10
-    name: "Level 10"
+    name: "Level 10 (R)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 11
-    name: "Level 11"
+    name: "Level 11 (L)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 12
-    name: "Level 12"
+    name: "Level 12 (R)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 13
-    name: "Level 13"
+    name: "Level 13 (R1)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 14
-    name: "Level 14"
+    name: "Level 14 (L1)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
   - id: 15
-    name: "Level 15 (Finish)"
+    name: "Level 15 (R1)"
     color: transition_color
-    threshold: 0.90
+    threshold: 0.75
 
 livesplit:
+
   host: "127.0.0.1"
   port: 16834
   # Socket-op budget (bounds a hung-server stall to this many seconds) and
   # the cadence of reconnect attempts while LiveSplit Server is down.
   timeout_seconds: 0.25
   reconnect_seconds: 5.0
+  follow_timer: true
 
 record:
   # Path template for recordings. Variables: {game}, {date}, {time},
   # {datetime}, {attempt} (auto-incremented, zero-padded to 4 digits).
-  path_template: "recordings/{game}/{datetime}_{attempt:04d}.mkv"
+  path_template: "~/Videos/Speedrun/{game}/{datetime}_{attempt:04d}.mkv"
   # Convert .mkv to this format after the run (best-effort, .mkv kept).
   convert_to: "mp4"
   # Keep recording for this many seconds after the last split fires
